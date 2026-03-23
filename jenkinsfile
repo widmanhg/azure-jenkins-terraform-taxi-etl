@@ -1,20 +1,73 @@
-stage('Terraform Init') {
-    steps {
-        withCredentials([
-            azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
-            string(credentialsId: 'SYNAPSE_SQL_PASSWORD', variable: 'SYNAPSE_PASS')
-        ]) {
-            dir('terraform') {
-                sh '''
-                    terraform init -reconfigure \
-                      -var="client_id=${AZURE_CLIENT_ID}" \
-                      -var="client_secret=${AZURE_CLIENT_SECRET}" \
-                      -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
-                      -var="tenant_id=${AZURE_TENANT_ID}" \
-                      -var="suffix=${TF_SUFFIX}" \
-                      -var="synapse_sql_password=${SYNAPSE_PASS}"
-                '''
+pipeline {
+    agent any
+
+    environment {
+        TF_SUFFIX = "etl01"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
             }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                withCredentials([azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')]) {
+                    dir('terraform') {
+                        sh '''
+                            terraform init -reconfigure \
+                              -var="client_id=${AZURE_CLIENT_ID}" \
+                              -var="client_secret=${AZURE_CLIENT_SECRET}" \
+                              -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
+                              -var="tenant_id=${AZURE_TENANT_ID}" \
+                              -var="suffix=${TF_SUFFIX}"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            terraform plan \
+                              -var="client_id=${AZURE_CLIENT_ID}" \
+                              -var="client_secret=${AZURE_CLIENT_SECRET}" \
+                              -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
+                              -var="tenant_id=${AZURE_TENANT_ID}" \
+                              -var="suffix=${TF_SUFFIX}" \
+                              -out=tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                withCredentials([azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')]) {
+                    dir('terraform') {
+                        sh 'terraform apply -auto-approve tfplan'
+                    }
+                }
+            }
+        }
+
+    }
+
+    post {
+        failure {
+            echo "Pipeline fallido — revisa los logs"
+        }
+        success {
+            echo "Terraform OK"
         }
     }
 }
