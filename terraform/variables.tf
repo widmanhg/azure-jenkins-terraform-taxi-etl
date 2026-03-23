@@ -39,8 +39,3 @@ variable "suffix" {
   type        = string
 }
 
-variable "synapse_sql_password" {
-  description = "Password para Synapse SQL admin"
-  type        = string
-  sensitive   = true
-}
