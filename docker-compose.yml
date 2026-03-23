@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile.jenkins
+    container_name: jenkins
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+    restart: unless-stopped
+
+  jenkins-agent:
+    image: jenkins/inbound-agent:latest
+    container_name: jenkins-agent
+    depends_on:
+      - jenkins
+    environment:
+      - JENKINS_URL=http://jenkins:8080
+      - JENKINS_AGENT_NAME=docker-agent
+      - JENKINS_SECRET=${JENKINS_AGENT_SECRET}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  jenkins_home:

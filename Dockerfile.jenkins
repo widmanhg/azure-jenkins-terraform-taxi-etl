@@ -1,0 +1,11 @@
+FROM jenkins/jenkins:lts
+
+USER root
+
+RUN apt-get update && apt-get install -y curl gnupg unzip lsb-release && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
+RUN curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip -o /tmp/terraform.zip && unzip /tmp/terraform.zip -d /usr/local/bin/ && rm /tmp/terraform.zip
+
+USER jenkins
