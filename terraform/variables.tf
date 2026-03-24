@@ -13,7 +13,7 @@ variable "location" {
 variable "sql_location" {
   description = "Region de Azure para SQL Server (East US puede estar restringido)"
   type        = string
-  default     = "East US 2"
+  default     = "West US 2"
 }
 
 variable "client_id" {
