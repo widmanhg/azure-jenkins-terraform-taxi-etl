@@ -1,0 +1,66 @@
+{
+  "name": "nyc-taxi-etl",
+  "description": "NYC Taxi ETL pipeline — Ingesta, limpieza, métricas y carga en Azure SQL",
+  "max_concurrent_runs": 1,
+  "tasks": [
+    {
+      "task_key": "etl_main",
+      "description": "Notebook principal ETL con Delta Live Tables",
+      "notebook_task": {
+        "notebook_path": "/Repos/azure-taxi-etl/databricks/notebook_etl",
+        "base_parameters": {
+          "input_path":       "",
+          "output_container": "processed",
+          "run_date":         ""
+        },
+        "source": "GIT"
+      },
+      "job_cluster_key": "etl_cluster",
+      "timeout_seconds": 7200,
+      "max_retries": 1,
+      "min_retry_interval_millis": 60000
+    }
+  ],
+  "job_clusters": [
+    {
+      "job_cluster_key": "etl_cluster",
+      "new_cluster": {
+        "spark_version":    "14.3.x-scala2.12",
+        "node_type_id":     "Standard_DS3_v2",
+        "num_workers":      2,
+        "autoscale": {
+          "min_workers": 1,
+          "max_workers": 4
+        },
+        "spark_conf": {
+          "spark.sql.extensions":              "io.delta.sql.DeltaSparkSessionExtension",
+          "spark.sql.catalog.spark_catalog":   "org.apache.spark.sql.delta.catalog.DeltaCatalog",
+          "spark.databricks.delta.retentionDurationCheck.enabled": "false"
+        },
+        "azure_attributes": {
+          "availability":        "ON_DEMAND_AZURE",
+          "first_on_demand":     1,
+          "spot_bid_max_price": -1
+        },
+        "init_scripts": [],
+        "libraries": [
+          { "pypi": { "package": "azure-storage-blob>=12.19.0" } },
+          { "pypi": { "package": "pyodbc>=5.0.0" } }
+        ],
+        "spark_env_vars": {
+          "PYSPARK_PYTHON": "/databricks/python3/bin/python3"
+        }
+      }
+    }
+  ],
+  "email_notifications": {
+    "on_failure": ["tu-email@empresa.com"],
+    "no_alert_for_skipped_runs": true
+  },
+  "git_source": {
+    "git_url":      "https://github.com/TU_USUARIO/azure-taxi-etl",
+    "git_provider": "gitHub",
+    "git_branch":   "main"
+  },
+  "format": "MULTI_TASK"
+}

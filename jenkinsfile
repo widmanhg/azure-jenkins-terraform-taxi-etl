@@ -2,17 +2,60 @@ pipeline {
     agent any
 
     environment {
-        TF_SUFFIX = "etl01"
+        TF_SUFFIX       = "etl01"
+        PARQUET_FILE    = "data/yellow_tripdata_2024-01.parquet"
+        BLOB_CONTAINER  = "raw"
+        DATABRICKS_JOB  = "nyc-taxi-etl"
     }
 
     stages {
 
+        // ── 1. Checkout ──────────────────────────────────────────────────────
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
+        // ── 2. Python deps ───────────────────────────────────────────────────
+        stage('Setup Python') {
+            steps {
+                sh '''
+                    pip install --quiet --upgrade pip
+                    pip install --quiet \
+                        "azure-storage-blob>=12.19.0" \
+                        "databricks-sdk>=0.20.0" \
+                        "pyodbc>=5.0.0" \
+                        "pandas>=2.0.0" \
+                        "pyarrow>=14.0.0" \
+                        "python-dotenv>=1.0.0" \
+                        "requests>=2.31.0" \
+                        "pytest>=7.4.0" \
+                        "pytest-cov>=4.1.0"
+                '''
+            }
+        }
+
+        // ── 3. Unit Tests (sin conexión Azure) ──────────────────────────────
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    python3 -m pytest tests/unit/ \
+                        -v --tb=short \
+                        --cov=functions \
+                        --cov-report=term-missing \
+                        --cov-fail-under=70 \
+                        -q
+                '''
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'tests/unit/*.xml'
+                }
+            }
+        }
+
+        // ── 4. Terraform Init ────────────────────────────────────────────────
         stage('Terraform Init') {
             steps {
                 withCredentials([
@@ -34,6 +77,7 @@ pipeline {
             }
         }
 
+        // ── 5. Terraform Plan ────────────────────────────────────────────────
         stage('Terraform Plan') {
             steps {
                 withCredentials([
@@ -47,6 +91,7 @@ pipeline {
                               -var="client_secret=${AZURE_CLIENT_SECRET}" \
                               -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
                               -var="tenant_id=${AZURE_TENANT_ID}" \
+                              -var="synapse_sql_password=${SYNAPSE_SQL_PASSWORD}" \
                               -var="suffix=${TF_SUFFIX}" \
                               -out=tfplan
                         '''
@@ -55,6 +100,7 @@ pipeline {
             }
         }
 
+        // ── 6. Terraform Apply ───────────────────────────────────────────────
         stage('Terraform Apply') {
             steps {
                 withCredentials([
@@ -68,14 +114,118 @@ pipeline {
             }
         }
 
+        // ── 7. Upload parquet → Azure Blob ───────────────────────────────────
+        stage('Upload to Blob Storage') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'azure-storage-connection-string', variable: 'AZURE_STORAGE_CONNECTION_STRING'),
+                    string(credentialsId: 'azure-storage-account-name',      variable: 'AZURE_STORAGE_ACCOUNT')
+                ]) {
+                    script {
+                        def output = sh(
+                            script: "python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
+                            returnStdout: true
+                        ).trim()
+                        echo output
+                        def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
+                        if (!blobLine) error('upload.py no devolvió BLOB_NAME — revisa el script.')
+                        env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
+                        echo "Blob subido: ${env.BLOB_NAME}"
+                    }
+                }
+            }
+        }
+
+        // ── 8. Ejecutar Databricks Job y esperar ─────────────────────────────
+        stage('Run Databricks ETL') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'databricks-host',  variable: 'DATABRICKS_HOST'),
+                    string(credentialsId: 'databricks-token', variable: 'DATABRICKS_TOKEN')
+                ]) {
+                    script {
+                        def output = sh(
+                            script: """
+                                python3 functions/run_databricks.py \
+                                    --blob-name ${env.BLOB_NAME} \
+                                    --blob-container ${env.BLOB_CONTAINER} \
+                                    --job-name ${env.DATABRICKS_JOB}
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        echo output
+                        def runLine = output.split('\n').find { it.startsWith('DATABRICKS_RUN_ID=') }
+                        if (runLine) env.DATABRICKS_RUN_ID = runLine.replace('DATABRICKS_RUN_ID=', '')
+                        echo "Databricks run_id: ${env.DATABRICKS_RUN_ID ?: 'N/A'}"
+                    }
+                }
+            }
+        }
+
+        // ── 9. Validar datos en Azure SQL ────────────────────────────────────
+        stage('Validate Data') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'azure-sql-server',   variable: 'AZURE_SQL_SERVER'),
+                    string(credentialsId: 'azure-sql-database', variable: 'AZURE_SQL_DATABASE'),
+                    string(credentialsId: 'azure-sql-username', variable: 'AZURE_SQL_USERNAME'),
+                    string(credentialsId: 'azure-sql-password', variable: 'AZURE_SQL_PASSWORD')
+                ]) {
+                    script {
+                        def parts    = env.BLOB_NAME.tokenize('/')
+                        env.RUN_DATE = (parts.size() >= 4)
+                            ? "${parts[1]}-${parts[2]}-${parts[3]}"
+                            : new Date().format('yyyy-MM-dd')
+                        echo "Validando fecha: ${env.RUN_DATE}"
+                    }
+                    sh "python3 functions/validate.py --run-date ${env.RUN_DATE}"
+                }
+            }
+        }
+
+        // ── 10. Integration & Data Quality Tests ─────────────────────────────
+        stage('Integration & Quality Tests') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'azure-storage-connection-string', variable: 'AZURE_STORAGE_CONNECTION_STRING'),
+                    string(credentialsId: 'databricks-host',                 variable: 'DATABRICKS_HOST'),
+                    string(credentialsId: 'databricks-token',                variable: 'DATABRICKS_TOKEN'),
+                    string(credentialsId: 'azure-sql-server',                variable: 'AZURE_SQL_SERVER'),
+                    string(credentialsId: 'azure-sql-database',              variable: 'AZURE_SQL_DATABASE'),
+                    string(credentialsId: 'azure-sql-username',              variable: 'AZURE_SQL_USERNAME'),
+                    string(credentialsId: 'azure-sql-password',              variable: 'AZURE_SQL_PASSWORD')
+                ]) {
+                    sh """
+                        RUN_DATE=${env.RUN_DATE} python3 -m pytest \
+                            tests/integration/ tests/data_quality/ \
+                            -v --tb=short -q
+                    """
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'tests/**/*.xml'
+                }
+            }
+        }
     }
 
     post {
-        failure {
-            echo "Pipeline fallido — revisa los logs"
-        }
         success {
-            echo "Terraform OK"
+            echo """
+===========================================
+  PIPELINE COMPLETO - EXITO
+  Blob      : ${env.BLOB_NAME ?: 'N/A'}
+  DB run_id : ${env.DATABRICKS_RUN_ID ?: 'N/A'}
+  Fecha ETL : ${env.RUN_DATE ?: 'N/A'}
+===========================================
+            """
+        }
+        failure {
+            echo "Pipeline fallido — revisa los logs de cada stage"
+        }
+        always {
+            cleanWs()
         }
     }
 }
