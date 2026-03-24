@@ -83,20 +83,24 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+
                             terraform plan \
-                              -var="client_id=${AZURE_CLIENT_ID}" \
-                              -var="client_secret=${AZURE_CLIENT_SECRET}" \
-                              -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
-                              -var="tenant_id=${AZURE_TENANT_ID}" \
-                              -var="suffix=${TF_SUFFIX}" \
-                              -var="sql_admin_password=${SQL_ADMIN_PASSWORD}" \
-                              -out=tfplan
+                            -var="client_id=${AZURE_CLIENT_ID}" \
+                            -var="client_secret=${AZURE_CLIENT_SECRET}" \
+                            -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
+                            -var="tenant_id=${AZURE_TENANT_ID}" \
+                            -var="suffix=${TF_SUFFIX}" \
+                            -var="sql_admin_password=${SQL_ADMIN_PASSWORD}" \
+                            -out=tfplan
                         '''
                     }
                 }
             }
         }
-
         stage('Terraform Apply') {
             steps {
                 withCredentials([
@@ -104,7 +108,14 @@ pipeline {
                     string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
                 ]) {
                     dir('terraform') {
-                        sh 'terraform apply -auto-approve tfplan'
+                        sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+
+                            terraform apply -auto-approve tfplan
+                        '''
                     }
                 }
             }
@@ -117,34 +128,42 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         script {
+
+                            def tfEnv = """
+                                export ARM_CLIENT_ID=${env.AZURE_CLIENT_ID} &&
+                                export ARM_CLIENT_SECRET=${env.AZURE_CLIENT_SECRET} &&
+                                export ARM_SUBSCRIPTION_ID=${env.AZURE_SUBSCRIPTION_ID} &&
+                                export ARM_TENANT_ID=${env.AZURE_TENANT_ID}
+                            """
+
                             env.AZURE_STORAGE_CONNECTION_STRING = sh(
-                                script: 'terraform output -raw storage_connection_string',
+                                script: "${tfEnv} && terraform output -raw storage_connection_string",
                                 returnStdout: true
                             ).trim()
 
                             env.AZURE_STORAGE_ACCOUNT = sh(
-                                script: 'terraform output -raw storage_account_name',
+                                script: "${tfEnv} && terraform output -raw storage_account_name",
                                 returnStdout: true
                             ).trim()
 
                             env.DATABRICKS_HOST = sh(
-                                script: 'terraform output -raw databricks_workspace_url',
+                                script: "${tfEnv} && terraform output -raw databricks_workspace_url",
                                 returnStdout: true
                             ).trim()
 
                             env.TF_SQL_SERVER = sh(
-                                script: 'terraform output -raw sql_server_fqdn',
+                                script: "${tfEnv} && terraform output -raw sql_server_fqdn",
                                 returnStdout: true
                             ).trim()
 
                             env.TF_SQL_DB = sh(
-                                script: 'terraform output -raw sql_database_name',
+                                script: "${tfEnv} && terraform output -raw sql_database_name",
                                 returnStdout: true
                             ).trim()
 
-                            echo "Storage account : ${env.AZURE_STORAGE_ACCOUNT}"
-                            echo "Databricks host : ${env.DATABRICKS_HOST}"
-                            echo "SQL Server      : ${env.TF_SQL_SERVER}"
+                            echo "Storage : ${env.AZURE_STORAGE_ACCOUNT}"
+                            echo "Databricks: ${env.DATABRICKS_HOST}"
+                            echo "SQL: ${env.TF_SQL_SERVER}"
                         }
                     }
                 }
