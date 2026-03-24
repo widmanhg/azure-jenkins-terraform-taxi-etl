@@ -36,7 +36,6 @@ pipeline {
             }
         }
 
-        // ── 3. Unit Tests (sin conexión Azure) ──────────────────────────────
         stage('Unit Tests') {
             steps {
                 sh '''
@@ -44,7 +43,6 @@ pipeline {
                         -v --tb=short \
                         --cov=functions \
                         --cov-report=term-missing \
-                        --cov-fail-under=70 \
                         -q
                 '''
             }

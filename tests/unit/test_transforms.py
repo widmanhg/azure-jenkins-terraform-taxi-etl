@@ -1,61 +1,63 @@
 """
-Tests unitarios para las transformaciones del ETL de NYC Taxi.
-No requieren conexión a Azure — usan datos sintéticos en pandas.
+Tests unitarios para functions/upload.py, functions/run_databricks.py
+y functions/validate.py.
+No requieren conexión a Azure — todo se mockea con unittest.mock.
 """
+import os
+import sys
 import pytest
 import pandas as pd
 from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import MagicMock, patch, mock_open
 
 
-# ─── Fixtures ──────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# FIXTURES COMPARTIDOS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @pytest.fixture
 def sample_trips():
-    """Crea un DataFrame de viajes sintéticos válidos."""
     base_time = datetime(2024, 1, 15, 10, 0, 0)
     return pd.DataFrame({
-        "pickup_datetime":   [base_time, base_time + timedelta(hours=1), base_time + timedelta(hours=2)],
-        "dropoff_datetime":  [base_time + timedelta(minutes=30), base_time + timedelta(hours=1, minutes=45), base_time + timedelta(hours=2, minutes=20)],
-        "vendor_id":         [1, 2, 1],
-        "passenger_count":   [1, 2, 3],
-        "trip_distance":     [5.2, 10.1, 3.4],
-        "pu_location_id":    [161, 230, 132],  # 132 = JFK
-        "do_location_id":    [4, 45, 87],
-        "payment_type":      [1, 2, 1],
-        "fare_amount":       [18.5, 32.0, 12.0],
-        "tip_amount":        [3.7, 6.4, 0.0],
-        "total_amount":      [25.3, 42.0, 15.0],
-        "extra":             [0.5, 0.5, 0.5],
-        "mta_tax":           [0.5, 0.5, 0.5],
-        "tolls_amount":      [0.0, 0.0, 0.0],
+        "pickup_datetime":      [base_time, base_time + timedelta(hours=1), base_time + timedelta(hours=2)],
+        "dropoff_datetime":     [base_time + timedelta(minutes=30), base_time + timedelta(hours=1, minutes=45), base_time + timedelta(hours=2, minutes=20)],
+        "vendor_id":            [1, 2, 1],
+        "passenger_count":      [1, 2, 3],
+        "trip_distance":        [5.2, 10.1, 3.4],
+        "pu_location_id":       [161, 230, 132],
+        "do_location_id":       [4, 45, 87],
+        "payment_type":         [1, 2, 1],
+        "fare_amount":          [18.5, 32.0, 12.0],
+        "tip_amount":           [3.7, 6.4, 0.0],
+        "total_amount":         [25.3, 42.0, 15.0],
+        "extra":                [0.5, 0.5, 0.5],
+        "mta_tax":              [0.5, 0.5, 0.5],
+        "tolls_amount":         [0.0, 0.0, 0.0],
         "congestion_surcharge": [2.5, 2.5, 2.5],
-        "airport_fee":       [0.0, 0.0, 1.25],
+        "airport_fee":          [0.0, 0.0, 1.25],
     })
 
 
 @pytest.fixture
 def dirty_trips(sample_trips):
-    """Añade filas inválidas al DataFrame limpio."""
     dirty = sample_trips.copy()
-    # Fila con distancia negativa
     dirty.loc[len(dirty)] = dirty.iloc[0].copy()
     dirty.loc[len(dirty)-1, "trip_distance"] = -1.0
-    # Fila con tarifa negativa
     dirty.loc[len(dirty)] = dirty.iloc[0].copy()
     dirty.loc[len(dirty)-1, "fare_amount"] = -5.0
-    # Fila con dropoff antes que pickup
     dirty.loc[len(dirty)] = dirty.iloc[0].copy()
     dirty.loc[len(dirty)-1, "dropoff_datetime"] = dirty.iloc[0]["pickup_datetime"] - timedelta(minutes=10)
-    # Fila con pasajeros fuera de rango
     dirty.loc[len(dirty)] = dirty.iloc[0].copy()
     dirty.loc[len(dirty)-1, "passenger_count"] = 0
     return dirty
 
 
-# ─── Helpers locales que replican la lógica del notebook ───────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# HELPERS LOCALES (replican lógica del notebook — mismos que antes)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def apply_clean_filters(df: pd.DataFrame) -> pd.DataFrame:
-    """Replica los filtros de calidad del notebook (en pandas para tests)."""
     return df[
         df["pickup_datetime"].notna()
         & df["dropoff_datetime"].notna()
@@ -72,24 +74,19 @@ def apply_clean_filters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Replica el cálculo de métricas del notebook."""
     df = df.copy()
     df["trip_duration_minutes"] = (
         df["dropoff_datetime"] - df["pickup_datetime"]
     ).dt.total_seconds() / 60.0
-
     df["speed_mph"] = df.apply(
         lambda r: r["trip_distance"] / (r["trip_duration_minutes"] / 60.0)
-        if r["trip_duration_minutes"] > 0 else None,
-        axis=1,
+        if r["trip_duration_minutes"] > 0 else None, axis=1,
     )
     df["fare_per_mile"] = df.apply(
-        lambda r: r["fare_amount"] / r["trip_distance"] if r["trip_distance"] > 0 else None,
-        axis=1,
+        lambda r: r["fare_amount"] / r["trip_distance"] if r["trip_distance"] > 0 else None, axis=1,
     )
     df["tip_pct"] = df.apply(
-        lambda r: r["tip_amount"] / r["fare_amount"] * 100 if r["fare_amount"] > 0 else 0.0,
-        axis=1,
+        lambda r: r["tip_amount"] / r["fare_amount"] * 100 if r["fare_amount"] > 0 else 0.0, axis=1,
     )
     airport_zones = {1, 132, 138}
     df["is_airport_trip"] = (
@@ -100,52 +97,371 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ─── Tests de limpieza ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS — functions/upload.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestUpload:
+
+    def test_get_blob_client_raises_without_env(self):
+        """get_blob_client lanza EnvironmentError si falta la variable."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("AZURE_STORAGE_CONNECTION_STRING", None)
+            from functions.upload import get_blob_client
+            with pytest.raises(EnvironmentError, match="AZURE_STORAGE_CONNECTION_STRING"):
+                get_blob_client()
+
+    def test_upload_parquet_file_not_found(self):
+        """upload_parquet lanza FileNotFoundError si el archivo no existe."""
+        with patch.dict(os.environ, {"AZURE_STORAGE_CONNECTION_STRING": "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=dGVzdA==;EndpointSuffix=core.windows.net"}):
+            from functions.upload import upload_parquet
+            with pytest.raises(FileNotFoundError):
+                upload_parquet("/nonexistent/path/file.parquet")
+
+    def test_upload_parquet_calls_blob_upload(self, tmp_path):
+        """upload_parquet llama a upload_blob con el archivo correcto."""
+        fake_file = tmp_path / "yellow_tripdata_2024-01.parquet"
+        fake_file.write_bytes(b"fake parquet data")
+
+        mock_container_client = MagicMock()
+        mock_blob_service = MagicMock()
+        mock_blob_service.get_container_client.return_value = mock_container_client
+        mock_blob_service.account_name = "testaccount"
+
+        with patch("functions.upload.get_blob_client", return_value=mock_blob_service):
+            from functions.upload import upload_parquet
+            url = upload_parquet(str(fake_file), container="raw")
+
+        mock_container_client.upload_blob.assert_called_once()
+        assert "testaccount" in url
+        assert "raw" in url
+
+    def test_upload_parquet_blob_name_format(self, tmp_path):
+        """El blob_name debe seguir el formato nyc-taxi/YYYY/MM/DD/<filename>."""
+        fake_file = tmp_path / "yellow_tripdata_2024-01.parquet"
+        fake_file.write_bytes(b"fake parquet data")
+
+        mock_container_client = MagicMock()
+        mock_blob_service = MagicMock()
+        mock_blob_service.get_container_client.return_value = mock_container_client
+        mock_blob_service.account_name = "testaccount"
+
+        with patch("functions.upload.get_blob_client", return_value=mock_blob_service):
+            from functions.upload import upload_parquet
+            url = upload_parquet(str(fake_file), container="raw")
+
+        call_kwargs = mock_container_client.upload_blob.call_args
+        blob_name_used = call_kwargs[1]["name"] if "name" in call_kwargs[1] else call_kwargs[0][0]
+        assert blob_name_used.startswith("nyc-taxi/")
+        assert "yellow_tripdata_2024-01.parquet" in blob_name_used
+
+    def test_upload_parquet_creates_container(self, tmp_path):
+        """upload_parquet intenta crear el container."""
+        fake_file = tmp_path / "test.parquet"
+        fake_file.write_bytes(b"data")
+
+        mock_container_client = MagicMock()
+        mock_blob_service = MagicMock()
+        mock_blob_service.get_container_client.return_value = mock_container_client
+        mock_blob_service.account_name = "acc"
+
+        with patch("functions.upload.get_blob_client", return_value=mock_blob_service):
+            from functions.upload import upload_parquet
+            upload_parquet(str(fake_file))
+
+        mock_container_client.create_container.assert_called_once()
+
+    def test_upload_returns_url_string(self, tmp_path):
+        """upload_parquet retorna una URL string válida."""
+        fake_file = tmp_path / "test.parquet"
+        fake_file.write_bytes(b"data")
+
+        mock_container_client = MagicMock()
+        mock_blob_service = MagicMock()
+        mock_blob_service.get_container_client.return_value = mock_container_client
+        mock_blob_service.account_name = "myaccount"
+
+        with patch("functions.upload.get_blob_client", return_value=mock_blob_service):
+            from functions.upload import upload_parquet
+            result = upload_parquet(str(fake_file))
+
+        assert isinstance(result, str)
+        assert result.startswith("https://")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS — functions/run_databricks.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRunDatabricks:
+
+    def test_get_headers_raises_without_token(self):
+        """get_headers lanza EnvironmentError si falta DATABRICKS_TOKEN."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABRICKS_TOKEN", None)
+            from functions.run_databricks import get_headers
+            with pytest.raises(EnvironmentError, match="DATABRICKS_TOKEN"):
+                get_headers()
+
+    def test_get_base_url_raises_without_host(self):
+        """get_base_url lanza EnvironmentError si falta DATABRICKS_HOST."""
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("DATABRICKS_HOST", None)
+            from functions.run_databricks import get_base_url
+            with pytest.raises(EnvironmentError, match="DATABRICKS_HOST"):
+                get_base_url()
+
+    def test_get_base_url_strips_trailing_slash(self):
+        """get_base_url elimina la barra final del host."""
+        with patch.dict(os.environ, {"DATABRICKS_HOST": "https://adb-123.azuredatabricks.net/"}):
+            from functions.run_databricks import get_base_url
+            url = get_base_url()
+        assert not url.endswith("/")
+        assert url == "https://adb-123.azuredatabricks.net"
+
+    def test_get_or_create_job_found(self):
+        """get_or_create_job retorna el job_id cuando el job existe."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "jobs": [
+                {"job_id": 42, "settings": {"name": "nyc-taxi-etl"}},
+                {"job_id": 99, "settings": {"name": "other-job"}},
+            ]
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"DATABRICKS_HOST": "https://host", "DATABRICKS_TOKEN": "tok"}):
+            with patch("functions.run_databricks.requests.get", return_value=mock_response):
+                from functions.run_databricks import get_or_create_job
+                job_id = get_or_create_job("nyc-taxi-etl")
+
+        assert job_id == 42
+
+    def test_get_or_create_job_not_found(self):
+        """get_or_create_job lanza ValueError si el job no existe."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"jobs": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"DATABRICKS_HOST": "https://host", "DATABRICKS_TOKEN": "tok"}):
+            with patch("functions.run_databricks.requests.get", return_value=mock_response):
+                from functions.run_databricks import get_or_create_job
+                with pytest.raises(ValueError, match="no encontrado"):
+                    get_or_create_job("nonexistent-job")
+
+    def test_trigger_job_returns_run_id(self):
+        """trigger_job retorna el run_id de la respuesta."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"run_id": 1234}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {
+            "DATABRICKS_HOST": "https://host",
+            "DATABRICKS_TOKEN": "tok",
+            "AZURE_STORAGE_ACCOUNT": "myaccount",
+        }):
+            with patch("functions.run_databricks.requests.post", return_value=mock_response):
+                from functions.run_databricks import trigger_job
+                run_id = trigger_job(job_id=42, blob_name="nyc-taxi/2024/01/15/file.parquet", blob_container="raw")
+
+        assert run_id == 1234
+
+    def test_wait_for_run_success(self):
+        """wait_for_run retorna SUCCESS cuando lifecycle=TERMINATED y result=SUCCESS."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"DATABRICKS_HOST": "https://host", "DATABRICKS_TOKEN": "tok"}):
+            with patch("functions.run_databricks.requests.get", return_value=mock_response):
+                with patch("functions.run_databricks.time.sleep"):
+                    from functions.run_databricks import wait_for_run
+                    result = wait_for_run(run_id=1234)
+
+        assert result == "SUCCESS"
+
+    def test_wait_for_run_failed(self):
+        """wait_for_run retorna FAILED cuando el job falla."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "FAILED"}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"DATABRICKS_HOST": "https://host", "DATABRICKS_TOKEN": "tok"}):
+            with patch("functions.run_databricks.requests.get", return_value=mock_response):
+                with patch("functions.run_databricks.time.sleep"):
+                    from functions.run_databricks import wait_for_run
+                    result = wait_for_run(run_id=1234)
+
+        assert result == "FAILED"
+
+    def test_wait_for_run_internal_error(self):
+        """wait_for_run retorna INTERNAL_ERROR en ese lifecycle state."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "state": {"life_cycle_state": "INTERNAL_ERROR", "result_state": ""}
+        }
+        mock_response.raise_for_status = MagicMock()
+
+        with patch.dict(os.environ, {"DATABRICKS_HOST": "https://host", "DATABRICKS_TOKEN": "tok"}):
+            with patch("functions.run_databricks.requests.get", return_value=mock_response):
+                with patch("functions.run_databricks.time.sleep"):
+                    from functions.run_databricks import wait_for_run
+                    result = wait_for_run(run_id=99)
+
+        assert result == "INTERNAL_ERROR"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS — functions/validate.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestValidate:
+
+    def _make_cursor(self, return_values: list):
+        """Crea un cursor mock que retorna valores secuenciales."""
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [(v,) for v in return_values]
+        return cursor
+
+    def test_get_connection_raises_missing_vars(self):
+        """get_connection lanza EnvironmentError si faltan variables SQL."""
+        with patch.dict(os.environ, {}, clear=True):
+            for var in ["AZURE_SQL_SERVER", "AZURE_SQL_DATABASE", "AZURE_SQL_USERNAME", "AZURE_SQL_PASSWORD"]:
+                os.environ.pop(var, None)
+            from functions.validate import get_connection
+            with pytest.raises(EnvironmentError, match="Variables faltantes"):
+                get_connection()
+
+    def test_check_row_count_passes(self):
+        """check_row_count no lanza excepción si hay suficientes filas."""
+        from functions.validate import check_row_count
+        cursor = self._make_cursor([5000])
+        result = check_row_count(cursor, "2024-01-15", min_rows=1000)
+        assert result == 5000
+
+    def test_check_row_count_fails(self):
+        """check_row_count lanza ValidationError si hay pocas filas."""
+        from functions.validate import check_row_count, ValidationError
+        cursor = self._make_cursor([500])
+        with pytest.raises(ValidationError, match="Pocas filas"):
+            check_row_count(cursor, "2024-01-15", min_rows=1000)
+
+    def test_check_nulls_passes(self):
+        """check_nulls no lanza excepción si no hay nulls en ninguna columna."""
+        from functions.validate import check_nulls
+        cursor = self._make_cursor([0] * 7)  # 7 columnas críticas
+        check_nulls(cursor, "2024-01-15")  # no debe lanzar
+
+    def test_check_nulls_fails_on_null_column(self):
+        """check_nulls lanza ValidationError si una columna tiene nulls."""
+        from functions.validate import check_nulls, ValidationError
+        cursor = self._make_cursor([0, 0, 3, 0, 0, 0, 0])  # passenger_count tiene 3 nulls
+        with pytest.raises(ValidationError, match="nulls"):
+            check_nulls(cursor, "2024-01-15")
+
+    def test_check_business_rules_passes(self):
+        """check_business_rules no lanza excepción si todas las reglas pasan."""
+        from functions.validate import check_business_rules
+        cursor = self._make_cursor([0, 0, 0, 0])  # 4 reglas, todas OK
+        check_business_rules(cursor, "2024-01-15")  # no debe lanzar
+
+    def test_check_business_rules_fails_negative_distance(self):
+        """check_business_rules lanza ValidationError si hay distancias negativas."""
+        from functions.validate import check_business_rules, ValidationError
+        cursor = self._make_cursor([5, 0, 0, 0])  # primera regla falla
+        with pytest.raises(ValidationError, match="trip_distance"):
+            check_business_rules(cursor, "2024-01-15")
+
+    def test_check_aggregations_table_passes(self):
+        """check_aggregations_table no lanza si hay filas."""
+        from functions.validate import check_aggregations_table
+        cursor = self._make_cursor([24])
+        result = check_aggregations_table(cursor, "2024-01-15")
+        assert result == 24
+
+    def test_check_aggregations_table_fails_empty(self):
+        """check_aggregations_table lanza ValidationError si la tabla está vacía."""
+        from functions.validate import check_aggregations_table, ValidationError
+        cursor = self._make_cursor([0])
+        with pytest.raises(ValidationError, match="vacía"):
+            check_aggregations_table(cursor, "2024-01-15")
+
+    def test_check_metrics_table_fails_empty(self):
+        """check_metrics_table lanza ValidationError si la tabla está vacía."""
+        from functions.validate import check_metrics_table, ValidationError
+        cursor = self._make_cursor([0])
+        with pytest.raises(ValidationError, match="vacía"):
+            check_metrics_table(cursor, "2024-01-15")
+
+    def test_run_all_validations_success(self):
+        """run_all_validations retorna True cuando todas las validaciones pasan."""
+        mock_conn = MagicMock()
+        # 1 row_count + 7 nulls + 4 business_rules + 1 aggregations + 1 metrics = 14 valores
+        mock_conn.cursor.return_value = self._make_cursor([5000] + [0]*7 + [0]*4 + [24] + [10])
+
+        with patch("functions.validate.get_connection", return_value=mock_conn):
+            from functions.validate import run_all_validations
+            result = run_all_validations("2024-01-15")
+
+        assert result is True
+
+    def test_run_all_validations_failure(self):
+        """run_all_validations retorna False cuando alguna validación falla."""
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value = self._make_cursor([0])  # row_count = 0, falla inmediato
+
+        with patch("functions.validate.get_connection", return_value=mock_conn):
+            from functions.validate import run_all_validations
+            result = run_all_validations("2024-01-15")
+
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS ORIGINALES — limpieza y métricas (helpers locales)
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class TestCleaning:
 
     def test_clean_keeps_valid_rows(self, sample_trips):
         result = apply_clean_filters(sample_trips)
-        assert len(result) == len(sample_trips), "Debería conservar todas las filas válidas"
+        assert len(result) == len(sample_trips)
 
     def test_clean_removes_negative_distance(self, dirty_trips):
         result = apply_clean_filters(dirty_trips)
-        assert (result["trip_distance"] >= 0).all(), "No debe haber distancias negativas"
+        assert (result["trip_distance"] >= 0).all()
 
     def test_clean_removes_negative_fare(self, dirty_trips):
         result = apply_clean_filters(dirty_trips)
-        assert (result["fare_amount"] >= 0).all(), "No debe haber tarifas negativas"
+        assert (result["fare_amount"] >= 0).all()
 
     def test_clean_removes_inverted_times(self, dirty_trips):
         result = apply_clean_filters(dirty_trips)
-        assert (result["dropoff_datetime"] > result["pickup_datetime"]).all(), \
-            "dropoff debe ser siempre mayor que pickup"
+        assert (result["dropoff_datetime"] > result["pickup_datetime"]).all()
 
     def test_clean_removes_invalid_passengers(self, dirty_trips):
         result = apply_clean_filters(dirty_trips)
-        assert result["passenger_count"].between(1, 6).all(), \
-            "Pasajeros deben estar entre 1 y 6"
+        assert result["passenger_count"].between(1, 6).all()
 
     def test_clean_dirty_removes_four_rows(self, dirty_trips, sample_trips):
-        dirty_count = len(dirty_trips)
-        clean_count = len(apply_clean_filters(dirty_trips))
-        removed = dirty_count - clean_count
-        assert removed == 4, f"Se esperaban 4 filas removidas, se removieron {removed}"
+        removed = len(dirty_trips) - len(apply_clean_filters(dirty_trips))
+        assert removed == 4
 
     def test_clean_no_nulls_in_critical_columns(self, sample_trips):
         result = apply_clean_filters(sample_trips)
-        critical = ["pickup_datetime", "dropoff_datetime", "pu_location_id", "do_location_id"]
-        for col in critical:
-            assert result[col].notna().all(), f"Columna {col} tiene nulls"
+        for col in ["pickup_datetime", "dropoff_datetime", "pu_location_id", "do_location_id"]:
+            assert result[col].notna().all()
 
-
-# ─── Tests de métricas ──────────────────────────────────────────────────────
 
 class TestMetrics:
 
     def test_duration_is_positive(self, sample_trips):
         result = compute_metrics(sample_trips)
-        assert (result["trip_duration_minutes"] > 0).all(), "La duración debe ser positiva"
+        assert (result["trip_duration_minutes"] > 0).all()
 
     def test_duration_matches_times(self, sample_trips):
         result = compute_metrics(sample_trips)
@@ -159,36 +475,30 @@ class TestMetrics:
     def test_speed_is_reasonable(self, sample_trips):
         result = compute_metrics(sample_trips)
         valid_speeds = result["speed_mph"].dropna()
-        assert (valid_speeds <= 200).all(), "Velocidades > 200 mph son anómalas"
-        assert (valid_speeds > 0).all(), "Velocidades deben ser positivas"
+        assert (valid_speeds <= 200).all()
+        assert (valid_speeds > 0).all()
 
     def test_tip_pct_range(self, sample_trips):
         result = compute_metrics(sample_trips)
-        assert (result["tip_pct"] >= 0).all(), "tip_pct no puede ser negativo"
+        assert (result["tip_pct"] >= 0).all()
 
     def test_airport_trip_detection(self, sample_trips):
         result = compute_metrics(sample_trips)
-        # pu_location_id=132 (JFK) en la fila 2 debe marcarse como airport
-        assert result.loc[result["pu_location_id"] == 132, "is_airport_trip"].all(), \
-            "JFK (132) debe detectarse como airport trip"
+        assert result.loc[result["pu_location_id"] == 132, "is_airport_trip"].all()
 
     def test_non_airport_trip(self, sample_trips):
         result = compute_metrics(sample_trips)
-        # pu=161, do=4 → no aeropuerto
         row = result[(result["pu_location_id"] == 161) & (result["do_location_id"] == 4)]
-        assert not row["is_airport_trip"].all(), "Zona 161→4 no debe ser airport trip"
+        assert not row["is_airport_trip"].all()
 
     def test_fare_per_mile_positive(self, sample_trips):
         result = compute_metrics(sample_trips)
-        valid = result["fare_per_mile"].dropna()
-        assert (valid > 0).all(), "fare_per_mile debe ser positivo"
+        assert (result["fare_per_mile"].dropna() > 0).all()
 
     def test_pickup_hour_in_range(self, sample_trips):
         result = compute_metrics(sample_trips)
-        assert result["pickup_hour"].between(0, 23).all(), "pickup_hour debe estar entre 0-23"
+        assert result["pickup_hour"].between(0, 23).all()
 
-
-# ─── Tests de agregaciones ──────────────────────────────────────────────────
 
 class TestAggregations:
 
@@ -198,34 +508,24 @@ class TestAggregations:
             trip_count=("trip_distance", "count"),
             avg_fare=("fare_amount", "mean"),
         ).reset_index()
-        assert len(agg) > 0, "La agregación zona/hora no debe estar vacía"
-        assert (agg["trip_count"] > 0).all(), "Todos los grupos deben tener al menos 1 viaje"
+        assert len(agg) > 0
+        assert (agg["trip_count"] > 0).all()
 
     def test_daily_totals_match_raw(self, sample_trips):
-        """La suma de viajes en la agregación debe igual al total de filas limpias."""
         df_clean = apply_clean_filters(sample_trips)
-        df = compute_metrics(df_clean)
-        agg = df.groupby("pickup_date").agg(total_trips=("trip_distance", "count")).reset_index()
-        assert agg["total_trips"].sum() == len(df_clean), \
-            "La suma de viajes por día debe coincidir con el total de filas"
+        agg = compute_metrics(df_clean).groupby("pickup_date").agg(
+            total_trips=("trip_distance", "count")
+        ).reset_index()
+        assert agg["total_trips"].sum() == len(df_clean)
 
-
-# ─── Tests de reglas de negocio NYC Taxi ───────────────────────────────────
 
 class TestBusinessRules:
 
     def test_payment_type_valid_values(self, sample_trips):
-        """payment_type debe ser 1-6 según NYC TLC."""
-        valid_types = {1, 2, 3, 4, 5, 6}
-        assert set(sample_trips["payment_type"].unique()).issubset(valid_types), \
-            "payment_type tiene valores inválidos"
+        assert set(sample_trips["payment_type"].unique()).issubset({1, 2, 3, 4, 5, 6})
 
     def test_total_amount_consistency(self, sample_trips):
-        """total_amount >= fare_amount (hay extras)."""
-        assert (sample_trips["total_amount"] >= sample_trips["fare_amount"]).all(), \
-            "total_amount siempre debe ser >= fare_amount"
+        assert (sample_trips["total_amount"] >= sample_trips["fare_amount"]).all()
 
     def test_vendor_id_valid(self, sample_trips):
-        """vendor_id solo puede ser 1 o 2 en yellow taxi."""
-        assert set(sample_trips["vendor_id"].unique()).issubset({1, 2}), \
-            "vendor_id debe ser 1 o 2"
+        assert set(sample_trips["vendor_id"].unique()).issubset({1, 2})
