@@ -225,7 +225,7 @@ pipeline {
             echo "Pipeline fallido — revisa los logs de cada stage"
         }
         always {
-            cleanWs()
+            deleteDir() 
         }
     }
 }
