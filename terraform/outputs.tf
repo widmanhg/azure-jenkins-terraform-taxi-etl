@@ -7,6 +7,3 @@ output "storage_account_name" {
   value = azurerm_storage_account.main.name
 }
 
-output "databricks_workspace_url" {
-  value = "https://${azurerm_databricks_workspace.main.workspace_url}"
-}
