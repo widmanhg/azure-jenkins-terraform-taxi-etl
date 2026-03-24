@@ -22,8 +22,7 @@ pipeline {
             steps {
                 sh '''
                     python3 -m venv venv
-                    . venv/bin/activate
-                    pip install --quiet \
+                    venv/bin/pip install --quiet \
                         "azure-storage-blob>=12.19.0" \
                         "databricks-sdk>=0.20.0" \
                         "pyodbc>=5.0.0" \
@@ -41,7 +40,7 @@ pipeline {
         stage('Unit Tests') {
             steps {
                 sh '''
-                    python3 -m pytest tests/unit/ \
+                    venv/bin/python3 -m pytest tests/unit/ \
                         -v --tb=short \
                         --cov=functions \
                         --cov-report=term-missing \
@@ -124,7 +123,7 @@ pipeline {
                 ]) {
                     script {
                         def output = sh(
-                            script: "python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
+                            script: "venv/bin/python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
                             returnStdout: true
                         ).trim()
                         echo output
@@ -147,7 +146,7 @@ pipeline {
                     script {
                         def output = sh(
                             script: """
-                                python3 functions/run_databricks.py \
+                                venv/bin/python3 functions/run_databricks.py \
                                     --blob-name ${env.BLOB_NAME} \
                                     --blob-container ${env.BLOB_CONTAINER} \
                                     --job-name ${env.DATABRICKS_JOB}
@@ -179,7 +178,7 @@ pipeline {
                             : new Date().format('yyyy-MM-dd')
                         echo "Validando fecha: ${env.RUN_DATE}"
                     }
-                    sh "python3 functions/validate.py --run-date ${env.RUN_DATE}"
+                    sh "venv/bin/python3 functions/validate.py --run-date ${env.RUN_DATE}"
                 }
             }
         }
@@ -197,7 +196,7 @@ pipeline {
                     string(credentialsId: 'azure-sql-password',              variable: 'AZURE_SQL_PASSWORD')
                 ]) {
                     sh """
-                        RUN_DATE=${env.RUN_DATE} python3 -m pytest \
+                        RUN_DATE=${env.RUN_DATE} venv/bin/python3 -m pytest \
                             tests/integration/ tests/data_quality/ \
                             -v --tb=short -q
                     """
@@ -226,7 +225,7 @@ pipeline {
             echo "Pipeline fallido — revisa los logs de cada stage"
         }
         always {
-            deleteDir() 
+            deleteDir()
         }
     }
 }
