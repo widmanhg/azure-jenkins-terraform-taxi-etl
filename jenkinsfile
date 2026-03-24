@@ -176,7 +176,7 @@ pipeline {
                                 returnStdout: true
                             ).trim()
 
-                            env.DATABRICKS_HOST = sh(
+                            env.DATABRICKS_HOST = "https://" + sh(
                                 script: '''
                                     export ARM_CLIENT_ID=$AZURE_CLIENT_ID
                                     export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
