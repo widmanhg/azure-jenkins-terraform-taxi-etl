@@ -319,105 +319,88 @@ class TestRunDatabricks:
 # TESTS — functions/validate.py
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTS — functions/validate.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Mockear pyodbc a nivel de módulo ANTES de importar validate
+import unittest.mock
+sys.modules.setdefault("pyodbc", unittest.mock.MagicMock())
+
+import functions.validate as validate_module
+
+
 class TestValidate:
 
     def _make_cursor(self, return_values: list):
-        """Crea un cursor mock que retorna valores secuenciales."""
         cursor = MagicMock()
         cursor.fetchone.side_effect = [(v,) for v in return_values]
         return cursor
 
     def test_get_connection_raises_missing_vars(self):
-        """get_connection lanza EnvironmentError si faltan variables SQL."""
         with patch.dict(os.environ, {}, clear=True):
             for var in ["AZURE_SQL_SERVER", "AZURE_SQL_DATABASE", "AZURE_SQL_USERNAME", "AZURE_SQL_PASSWORD"]:
                 os.environ.pop(var, None)
-            from functions.validate import get_connection
             with pytest.raises(EnvironmentError, match="Variables faltantes"):
-                get_connection()
+                validate_module.get_connection()
 
     def test_check_row_count_passes(self):
-        """check_row_count no lanza excepción si hay suficientes filas."""
-        from functions.validate import check_row_count
         cursor = self._make_cursor([5000])
-        result = check_row_count(cursor, "2024-01-15", min_rows=1000)
+        result = validate_module.check_row_count(cursor, "2024-01-15", min_rows=1000)
         assert result == 5000
 
     def test_check_row_count_fails(self):
-        """check_row_count lanza ValidationError si hay pocas filas."""
-        from functions.validate import check_row_count, ValidationError
         cursor = self._make_cursor([500])
-        with pytest.raises(ValidationError, match="Pocas filas"):
-            check_row_count(cursor, "2024-01-15", min_rows=1000)
+        with pytest.raises(validate_module.ValidationError, match="Pocas filas"):
+            validate_module.check_row_count(cursor, "2024-01-15", min_rows=1000)
 
     def test_check_nulls_passes(self):
-        """check_nulls no lanza excepción si no hay nulls en ninguna columna."""
-        from functions.validate import check_nulls
-        cursor = self._make_cursor([0] * 7)  # 7 columnas críticas
-        check_nulls(cursor, "2024-01-15")  # no debe lanzar
+        cursor = self._make_cursor([0] * 7)
+        validate_module.check_nulls(cursor, "2024-01-15")
 
     def test_check_nulls_fails_on_null_column(self):
-        """check_nulls lanza ValidationError si una columna tiene nulls."""
-        from functions.validate import check_nulls, ValidationError
-        cursor = self._make_cursor([0, 0, 3, 0, 0, 0, 0])  # passenger_count tiene 3 nulls
-        with pytest.raises(ValidationError, match="nulls"):
-            check_nulls(cursor, "2024-01-15")
+        cursor = self._make_cursor([0, 0, 3, 0, 0, 0, 0])
+        with pytest.raises(validate_module.ValidationError, match="nulls"):
+            validate_module.check_nulls(cursor, "2024-01-15")
 
     def test_check_business_rules_passes(self):
-        """check_business_rules no lanza excepción si todas las reglas pasan."""
-        from functions.validate import check_business_rules
-        cursor = self._make_cursor([0, 0, 0, 0])  # 4 reglas, todas OK
-        check_business_rules(cursor, "2024-01-15")  # no debe lanzar
+        cursor = self._make_cursor([0, 0, 0, 0])
+        validate_module.check_business_rules(cursor, "2024-01-15")
 
     def test_check_business_rules_fails_negative_distance(self):
-        """check_business_rules lanza ValidationError si hay distancias negativas."""
-        from functions.validate import check_business_rules, ValidationError
-        cursor = self._make_cursor([5, 0, 0, 0])  # primera regla falla
-        with pytest.raises(ValidationError, match="trip_distance"):
-            check_business_rules(cursor, "2024-01-15")
+        cursor = self._make_cursor([5, 0, 0, 0])
+        with pytest.raises(validate_module.ValidationError, match="trip_distance"):
+            validate_module.check_business_rules(cursor, "2024-01-15")
 
     def test_check_aggregations_table_passes(self):
-        """check_aggregations_table no lanza si hay filas."""
-        from functions.validate import check_aggregations_table
         cursor = self._make_cursor([24])
-        result = check_aggregations_table(cursor, "2024-01-15")
+        result = validate_module.check_aggregations_table(cursor, "2024-01-15")
         assert result == 24
 
     def test_check_aggregations_table_fails_empty(self):
-        """check_aggregations_table lanza ValidationError si la tabla está vacía."""
-        from functions.validate import check_aggregations_table, ValidationError
         cursor = self._make_cursor([0])
-        with pytest.raises(ValidationError, match="vacía"):
-            check_aggregations_table(cursor, "2024-01-15")
+        with pytest.raises(validate_module.ValidationError, match="vacía"):
+            validate_module.check_aggregations_table(cursor, "2024-01-15")
 
     def test_check_metrics_table_fails_empty(self):
-        """check_metrics_table lanza ValidationError si la tabla está vacía."""
-        from functions.validate import check_metrics_table, ValidationError
         cursor = self._make_cursor([0])
-        with pytest.raises(ValidationError, match="vacía"):
-            check_metrics_table(cursor, "2024-01-15")
+        with pytest.raises(validate_module.ValidationError, match="vacía"):
+            validate_module.check_metrics_table(cursor, "2024-01-15")
 
     def test_run_all_validations_success(self):
-        """run_all_validations retorna True cuando todas las validaciones pasan."""
         mock_conn = MagicMock()
-        # 1 row_count + 7 nulls + 4 business_rules + 1 aggregations + 1 metrics = 14 valores
-        mock_conn.cursor.return_value = self._make_cursor([5000] + [0]*7 + [0]*4 + [24] + [10])
-
-        with patch("functions.validate.get_connection", return_value=mock_conn):
-            from functions.validate import run_all_validations
-            result = run_all_validations("2024-01-15")
-
+        mock_conn.cursor.return_value = self._make_cursor(
+            [5000] + [0]*7 + [0]*4 + [24] + [10]
+        )
+        with patch.object(validate_module, "get_connection", return_value=mock_conn):
+            result = validate_module.run_all_validations("2024-01-15")
         assert result is True
 
     def test_run_all_validations_failure(self):
-        """run_all_validations retorna False cuando alguna validación falla."""
         mock_conn = MagicMock()
-        mock_conn.cursor.return_value = self._make_cursor([0])  # row_count = 0, falla inmediato
-
-        with patch("functions.validate.get_connection", return_value=mock_conn):
-            from functions.validate import run_all_validations
-            result = run_all_validations("2024-01-15")
-
+        mock_conn.cursor.return_value = self._make_cursor([0])
+        with patch.object(validate_module, "get_connection", return_value=mock_conn):
+            result = validate_module.run_all_validations("2024-01-15")
         assert result is False
 
 
