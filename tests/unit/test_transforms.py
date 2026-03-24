@@ -319,9 +319,6 @@ class TestRunDatabricks:
 # TESTS — functions/validate.py
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TESTS — functions/validate.py
-# ═══════════════════════════════════════════════════════════════════════════════
 
 # Mockear pyodbc a nivel de módulo ANTES de importar validate
 import unittest.mock
@@ -398,7 +395,11 @@ class TestValidate:
 
     def test_run_all_validations_failure(self):
         mock_conn = MagicMock()
-        mock_conn.cursor.return_value = self._make_cursor([0])
+        # run_all_validations no para en el primer fallo — ejecuta TODAS las validaciones
+        # row_count=0 (falla), luego nulls necesita 7 valores, business_rules 4, aggregations 1, metrics 1
+        mock_conn.cursor.return_value = self._make_cursor(
+            [0] + [0]*7 + [0]*4 + [0] + [0]
+        )
         with patch.object(validate_module, "get_connection", return_value=mock_conn):
             result = validate_module.run_all_validations("2024-01-15")
         assert result is False
