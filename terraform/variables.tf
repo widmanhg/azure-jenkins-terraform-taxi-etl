@@ -5,9 +5,15 @@ variable "project_name" {
 }
 
 variable "location" {
-  description = "Region de Azure"
+  description = "Region de Azure para la mayoria de recursos"
   type        = string
   default     = "East US"
+}
+
+variable "sql_location" {
+  description = "Region de Azure para SQL Server (East US puede estar restringido)"
+  type        = string
+  default     = "East US 2"
 }
 
 variable "client_id" {
