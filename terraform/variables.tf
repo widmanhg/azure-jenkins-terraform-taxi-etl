@@ -39,3 +39,14 @@ variable "suffix" {
   type        = string
 }
 
+variable "sql_admin_username" {
+  description = "Usuario administrador de Azure SQL"
+  type        = string
+  default     = "sqladmin"
+}
+
+variable "sql_admin_password" {
+  description = "Password del administrador de Azure SQL"
+  type        = string
+  sensitive   = true
+}
