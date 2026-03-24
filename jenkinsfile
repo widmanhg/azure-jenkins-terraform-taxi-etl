@@ -2,10 +2,10 @@ pipeline {
     agent any
 
     environment {
-        TF_SUFFIX       = "etl01"
-        PARQUET_FILE    = "data/yellow_tripdata_2024-01.parquet"
-        BLOB_CONTAINER  = "raw"
-        DATABRICKS_JOB  = "nyc-taxi-etl"
+        TF_SUFFIX      = "etl01"
+        PARQUET_FILE   = "data/yellow_tripdata_2024-01.parquet"
+        BLOB_CONTAINER = "raw"
+        DATABRICKS_JOB = "nyc-taxi-etl"
     }
 
     stages {
@@ -59,7 +59,7 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         sh '''
-                            terraform init -reconfigure \
+                            terraform init \
                               -var="client_id=${AZURE_CLIENT_ID}" \
                               -var="client_secret=${AZURE_CLIENT_SECRET}" \
                               -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
@@ -114,57 +114,52 @@ pipeline {
                 ]) {
                     dir('terraform') {
                         script {
+                            env.AZURE_STORAGE_CONNECTION_STRING = sh(
+                                script: 'terraform output -raw storage_connection_string',
+                                returnStdout: true
+                            ).trim()
+
+                            env.AZURE_STORAGE_ACCOUNT = sh(
+                                script: 'terraform output -raw storage_account_name',
+                                returnStdout: true
+                            ).trim()
+
+                            env.DATABRICKS_HOST = sh(
+                                script: 'terraform output -raw databricks_workspace_url',
+                                returnStdout: true
+                            ).trim()
+
                             env.TF_SQL_SERVER = sh(
                                 script: 'terraform output -raw sql_server_fqdn',
                                 returnStdout: true
                             ).trim()
+
                             env.TF_SQL_DB = sh(
                                 script: 'terraform output -raw sql_database_name',
                                 returnStdout: true
                             ).trim()
-                            env.TF_DATABRICKS_URL = sh(
-                                script: 'terraform output -raw databricks_workspace_url',
-                                returnStdout: true
-                            ).trim()
+
+                            echo "Storage account : ${env.AZURE_STORAGE_ACCOUNT}"
+                            echo "Databricks host : ${env.DATABRICKS_HOST}"
+                            echo "SQL Server      : ${env.TF_SQL_SERVER}"
                         }
                     }
                 }
-                echo "============================================"
-                echo "AGREGA ESTAS CREDENCIALES A JENKINS:"
-                echo "--------------------------------------------"
-                echo "ID: azure-storage-connection-string"
-                echo "    Portal -> Storage Accounts -> taxietletl01"
-                echo "    -> Security+networking -> Access keys -> key1 -> Connection string"
-                echo "ID: azure-storage-account-name  VALUE: taxietletl01"
-                echo "ID: databricks-host  VALUE: https://${env.TF_DATABRICKS_URL}"
-                echo "ID: databricks-token"
-                echo "    Entra a https://${env.TF_DATABRICKS_URL}"
-                echo "    -> Settings -> Developer -> Access tokens -> Generate"
-                echo "ID: azure-sql-server    VALUE: ${env.TF_SQL_SERVER}"
-                echo "ID: azure-sql-database  VALUE: ${env.TF_SQL_DB}"
-                echo "ID: azure-sql-username  VALUE: sqladmin"
-                echo "ID: azure-sql-password  (misma que sql_admin_password)"
-                echo "============================================"
             }
         }
 
         stage('Upload to Blob Storage') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'azure-storage-connection-string', variable: 'AZURE_STORAGE_CONNECTION_STRING'),
-                    string(credentialsId: 'azure-storage-account-name',      variable: 'AZURE_STORAGE_ACCOUNT')
-                ]) {
-                    script {
-                        def output = sh(
-                            script: "venv/bin/python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
-                            returnStdout: true
-                        ).trim()
-                        echo output
-                        def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
-                        if (!blobLine) error('upload.py no devolvio BLOB_NAME')
-                        env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
-                        echo "Blob subido: ${env.BLOB_NAME}"
-                    }
+                script {
+                    def output = sh(
+                        script: "venv/bin/python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
+                        returnStdout: true
+                    ).trim()
+                    echo output
+                    def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
+                    if (!blobLine) error('upload.py no devolvio BLOB_NAME')
+                    env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
+                    echo "Blob subido: ${env.BLOB_NAME}"
                 }
             }
         }
@@ -172,7 +167,6 @@ pipeline {
         stage('Run Databricks ETL') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'databricks-host',  variable: 'DATABRICKS_HOST'),
                     string(credentialsId: 'databricks-token', variable: 'DATABRICKS_TOKEN')
                 ]) {
                     script {
@@ -197,12 +191,12 @@ pipeline {
         stage('Validate Data') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'azure-sql-server',   variable: 'AZURE_SQL_SERVER'),
-                    string(credentialsId: 'azure-sql-database', variable: 'AZURE_SQL_DATABASE'),
                     string(credentialsId: 'azure-sql-username', variable: 'AZURE_SQL_USERNAME'),
                     string(credentialsId: 'azure-sql-password', variable: 'AZURE_SQL_PASSWORD')
                 ]) {
                     script {
+                        env.AZURE_SQL_SERVER   = env.TF_SQL_SERVER
+                        env.AZURE_SQL_DATABASE = env.TF_SQL_DB
                         def parts    = env.BLOB_NAME.tokenize('/')
                         env.RUN_DATE = (parts.size() >= 4)
                             ? "${parts[1]}-${parts[2]}-${parts[3]}"
@@ -217,13 +211,9 @@ pipeline {
         stage('Integration & Quality Tests') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'azure-storage-connection-string', variable: 'AZURE_STORAGE_CONNECTION_STRING'),
-                    string(credentialsId: 'databricks-host',                 variable: 'DATABRICKS_HOST'),
-                    string(credentialsId: 'databricks-token',                variable: 'DATABRICKS_TOKEN'),
-                    string(credentialsId: 'azure-sql-server',                variable: 'AZURE_SQL_SERVER'),
-                    string(credentialsId: 'azure-sql-database',              variable: 'AZURE_SQL_DATABASE'),
-                    string(credentialsId: 'azure-sql-username',              variable: 'AZURE_SQL_USERNAME'),
-                    string(credentialsId: 'azure-sql-password',              variable: 'AZURE_SQL_PASSWORD')
+                    string(credentialsId: 'databricks-token',   variable: 'DATABRICKS_TOKEN'),
+                    string(credentialsId: 'azure-sql-username', variable: 'AZURE_SQL_USERNAME'),
+                    string(credentialsId: 'azure-sql-password', variable: 'AZURE_SQL_PASSWORD')
                 ]) {
                     sh """
                         RUN_DATE=${env.RUN_DATE} venv/bin/python3 -m pytest \
@@ -255,7 +245,7 @@ pipeline {
             echo "Pipeline fallido — revisa los logs de cada stage"
         }
         always {
-            deleteDir()
+            sh 'rm -rf venv'
         }
     }
 }
