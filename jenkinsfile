@@ -75,6 +75,31 @@ pipeline {
                 }
             }
         }
+
+        stage('Terraform Import RG') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+
+                            terraform import \
+                            azurerm_resource_group.main \
+                            /subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/taxi-etl-rg \
+                            || true
+                        '''
+                    }
+                }
+            }
+        }
+
+
+
         stage('Terraform Plan') {
             steps {
                 withCredentials([
