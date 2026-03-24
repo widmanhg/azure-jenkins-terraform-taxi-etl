@@ -10,14 +10,12 @@ pipeline {
 
     stages {
 
-        // ── 1. Checkout ──────────────────────────────────────────────────────
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
 
-        // ── 2. Python deps ───────────────────────────────────────────────────
         stage('Setup Python') {
             steps {
                 sh '''
@@ -36,7 +34,6 @@ pipeline {
             }
         }
 
-        // ── 3. Unit Tests ────────────────────────────────────────────────────
         stage('Unit Tests') {
             steps {
                 sh '''
@@ -54,11 +51,11 @@ pipeline {
             }
         }
 
-        // ── 4. Terraform Init ────────────────────────────────────────────────
         stage('Terraform Init') {
             steps {
                 withCredentials([
-                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
+                    string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
                 ]) {
                     dir('terraform') {
                         sh '''
@@ -67,18 +64,19 @@ pipeline {
                               -var="client_secret=${AZURE_CLIENT_SECRET}" \
                               -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
                               -var="tenant_id=${AZURE_TENANT_ID}" \
-                              -var="suffix=${TF_SUFFIX}"
+                              -var="suffix=${TF_SUFFIX}" \
+                              -var="sql_admin_password=${SQL_ADMIN_PASSWORD}"
                         '''
                     }
                 }
             }
         }
 
-        // ── 5. Terraform Plan ────────────────────────────────────────────────
         stage('Terraform Plan') {
             steps {
                 withCredentials([
-                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
+                    string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
                 ]) {
                     dir('terraform') {
                         sh '''
@@ -88,6 +86,7 @@ pipeline {
                               -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
                               -var="tenant_id=${AZURE_TENANT_ID}" \
                               -var="suffix=${TF_SUFFIX}" \
+                              -var="sql_admin_password=${SQL_ADMIN_PASSWORD}" \
                               -out=tfplan
                         '''
                     }
@@ -95,11 +94,11 @@ pipeline {
             }
         }
 
-        // ── 6. Terraform Apply ───────────────────────────────────────────────
         stage('Terraform Apply') {
             steps {
                 withCredentials([
-                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
+                    string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
                 ]) {
                     dir('terraform') {
                         sh 'terraform apply -auto-approve tfplan'
@@ -108,7 +107,47 @@ pipeline {
             }
         }
 
-        // ── 7. Upload parquet → Azure Blob ───────────────────────────────────
+        stage('Capture Terraform Outputs') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                ]) {
+                    dir('terraform') {
+                        script {
+                            env.TF_SQL_SERVER = sh(
+                                script: 'terraform output -raw sql_server_fqdn',
+                                returnStdout: true
+                            ).trim()
+                            env.TF_SQL_DB = sh(
+                                script: 'terraform output -raw sql_database_name',
+                                returnStdout: true
+                            ).trim()
+                            env.TF_DATABRICKS_URL = sh(
+                                script: 'terraform output -raw databricks_workspace_url',
+                                returnStdout: true
+                            ).trim()
+                        }
+                    }
+                }
+                echo "============================================"
+                echo "AGREGA ESTAS CREDENCIALES A JENKINS:"
+                echo "--------------------------------------------"
+                echo "ID: azure-storage-connection-string"
+                echo "    Portal -> Storage Accounts -> taxietletl01"
+                echo "    -> Security+networking -> Access keys -> key1 -> Connection string"
+                echo "ID: azure-storage-account-name  VALUE: taxietletl01"
+                echo "ID: databricks-host  VALUE: https://${env.TF_DATABRICKS_URL}"
+                echo "ID: databricks-token"
+                echo "    Entra a https://${env.TF_DATABRICKS_URL}"
+                echo "    -> Settings -> Developer -> Access tokens -> Generate"
+                echo "ID: azure-sql-server    VALUE: ${env.TF_SQL_SERVER}"
+                echo "ID: azure-sql-database  VALUE: ${env.TF_SQL_DB}"
+                echo "ID: azure-sql-username  VALUE: sqladmin"
+                echo "ID: azure-sql-password  (misma que sql_admin_password)"
+                echo "============================================"
+            }
+        }
+
         stage('Upload to Blob Storage') {
             steps {
                 withCredentials([
@@ -122,7 +161,7 @@ pipeline {
                         ).trim()
                         echo output
                         def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
-                        if (!blobLine) error('upload.py no devolvió BLOB_NAME — revisa el script.')
+                        if (!blobLine) error('upload.py no devolvio BLOB_NAME')
                         env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
                         echo "Blob subido: ${env.BLOB_NAME}"
                     }
@@ -130,7 +169,6 @@ pipeline {
             }
         }
 
-        // ── 8. Ejecutar Databricks Job y esperar ─────────────────────────────
         stage('Run Databricks ETL') {
             steps {
                 withCredentials([
@@ -156,7 +194,6 @@ pipeline {
             }
         }
 
-        // ── 9. Validar datos en Azure SQL ────────────────────────────────────
         stage('Validate Data') {
             steps {
                 withCredentials([
@@ -177,7 +214,6 @@ pipeline {
             }
         }
 
-        // ── 10. Integration & Data Quality Tests ─────────────────────────────
         stage('Integration & Quality Tests') {
             steps {
                 withCredentials([
