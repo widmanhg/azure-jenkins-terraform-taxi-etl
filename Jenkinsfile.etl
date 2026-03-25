@@ -61,17 +61,22 @@ pipeline {
 
         stage('Upload to Blob Storage') {
             steps {
-                script {
-                    def output = sh(
-                        script: "venv/bin/python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
-                        returnStdout: true
-                    ).trim()
-                    echo output
+                withCredentials([
+                    string(credentialsId: 'azure-storage-connection-string', 
+                        variable: 'AZURE_STORAGE_CONNECTION_STRING')
+                ]) {
+                    script {
+                        def output = sh(
+                            script: "venv/bin/python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
+                            returnStdout: true
+                        ).trim()
+                        echo output
 
-                    def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
-                    if (!blobLine) error('upload.py no devolvió BLOB_NAME')
-                    env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
-                    echo "Blob subido: ${env.BLOB_NAME}"
+                        def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
+                        if (!blobLine) error('upload.py no devolvió BLOB_NAME')
+                        env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
+                        echo "Blob subido: ${env.BLOB_NAME}"
+                    }
                 }
             }
         }
