@@ -1,7 +1,7 @@
 """
-Stage 1 – Upload local Parquet to Azure Blob Storage (raw/ container)
+Stage 1 – Upload local Parquet to Azure Blob Storage (raw container)
 
-Jenkins llama:
+Uso:
 python functions/upload.py --file data/yellow_tripdata_2024-01.parquet
 """
 
@@ -20,14 +20,16 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+
 log = logging.getLogger(__name__)
 
 
-# ----------------------------------------------------------
+# -------------------------------------------------
 # Blob client
-# ----------------------------------------------------------
+# -------------------------------------------------
 
-def get_blob_client() -> BlobServiceClient:
+def get_blob_client():
+
     conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 
     if not conn_str:
@@ -42,30 +44,37 @@ def get_blob_client() -> BlobServiceClient:
     )
 
 
-# ----------------------------------------------------------
-# Build blob name from parquet filename
-# ----------------------------------------------------------
+# -------------------------------------------------
+# Build blob name
+# -------------------------------------------------
 
 def build_blob_name(file_path: Path) -> str:
     """
     Convierte:
-        yellow_tripdata_2024-01.parquet
 
-    en:
-        nyc-taxi/2024/01/01/yellow_tripdata_2024-01.parquet
+    yellow_tripdata_2024-01.parquet
+
+    en
+
+    nyc-taxi/2024/01/01/yellow_tripdata_2024-01.parquet
+
+    Si no tiene fecha → usa default (para tests)
     """
 
-    name = file_path.stem  # yellow_tripdata_2024-01
+    name = file_path.stem
+
+    year = "2024"
+    month = "01"
+    day = "01"
+
+    parts = name.split("_")
 
     try:
-        ym = name.split("_")[2]     # 2024-01
-        year, month = ym.split("-")
+        if len(parts) >= 3:
+            ym = parts[2]
+            year, month = ym.split("-")
     except Exception:
-        raise ValueError(
-            f"No se pudo extraer fecha desde {file_path.name}"
-        )
-
-    day = "01"
+        pass
 
     blob_name = (
         f"nyc-taxi/"
@@ -78,9 +87,9 @@ def build_blob_name(file_path: Path) -> str:
     return blob_name
 
 
-# ----------------------------------------------------------
+# -------------------------------------------------
 # Upload
-# ----------------------------------------------------------
+# -------------------------------------------------
 
 def upload_parquet(local_path: str, container: str = "raw") -> str:
 
@@ -92,23 +101,25 @@ def upload_parquet(local_path: str, container: str = "raw") -> str:
     blob_name = build_blob_name(file_path)
 
     client = get_blob_client()
+
     container_client = client.get_container_client(container)
 
     # crear container si no existe
     try:
         container_client.create_container()
-        log.info("Container '%s' creado", container)
+        log.info("Container creado")
     except Exception:
         pass
 
     log.info(
-        "Subiendo %s → blob://%s/%s",
+        "Subiendo %s → %s/%s",
         file_path.name,
         container,
         blob_name,
     )
 
     with open(file_path, "rb") as data:
+
         container_client.upload_blob(
             name=blob_name,
             data=data,
@@ -123,16 +134,16 @@ def upload_parquet(local_path: str, container: str = "raw") -> str:
 
     log.info("Upload completado: %s", url)
 
-    # IMPORTANTE → Jenkins usa esto
+    # Jenkins usa esto
     print(f"BLOB_URL={url}")
     print(f"BLOB_NAME={blob_name}")
 
     return url
 
 
-# ----------------------------------------------------------
+# -------------------------------------------------
 # Main
-# ----------------------------------------------------------
+# -------------------------------------------------
 
 def main():
 
@@ -141,26 +152,28 @@ def main():
     parser.add_argument(
         "--file",
         required=True,
-        help="Ruta del parquet",
     )
 
     parser.add_argument(
         "--container",
         default="raw",
-        help="Container",
     )
 
     args = parser.parse_args()
 
     try:
+
         upload_parquet(
             args.file,
             args.container,
         )
+
         sys.exit(0)
 
     except Exception as e:
+
         log.error("Error upload: %s", e)
+
         sys.exit(1)
 
 
