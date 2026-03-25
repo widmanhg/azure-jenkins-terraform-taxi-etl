@@ -59,23 +59,21 @@ def check_row_count(cursor, run_date: str, min_rows: int = 1000):
     cursor.execute(
         """
         SELECT COUNT(*) FROM dbo.nyc_taxi_trips
-        WHERE CAST(pickup_datetime AS DATE) = ?
+        WHERE CAST(pickup_date AS DATE) = ?
         """,
         run_date,
     )
     count = cursor.fetchone()[0]
     log.info("Filas para %s: %s (mínimo requerido: %s)", run_date, count, min_rows)
     if count < min_rows:
-        raise ValidationError(
-            f"Pocas filas para {run_date}: {count} < {min_rows}"
-        )
+        raise ValidationError(f"Pocas filas para {run_date}: {count} < {min_rows}")
     return count
 
 
 def check_nulls(cursor, run_date: str):
     """Verifica que columnas críticas no tengan nulls."""
     critical_cols = [
-        "pickup_datetime", "dropoff_datetime",
+        "pickup_date",
         "passenger_count", "trip_distance",
         "fare_amount", "pu_location_id", "do_location_id",
     ]
@@ -83,7 +81,7 @@ def check_nulls(cursor, run_date: str):
         cursor.execute(
             f"""
             SELECT COUNT(*) FROM dbo.nyc_taxi_trips
-            WHERE CAST(pickup_datetime AS DATE) = ?
+            WHERE CAST(pickup_date AS DATE) = ?
               AND {col} IS NULL
             """,
             run_date,
@@ -97,10 +95,9 @@ def check_nulls(cursor, run_date: str):
 def check_business_rules(cursor, run_date: str):
     """Reglas de negocio básicas de NYC Taxi."""
     checks = [
-        ("trip_distance >= 0",    "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_datetime AS DATE) = ? AND trip_distance < 0"),
-        ("fare_amount >= 0",      "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_datetime AS DATE) = ? AND fare_amount < 0"),
-        ("passenger_count 1-6",   "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_datetime AS DATE) = ? AND (passenger_count < 1 OR passenger_count > 6)"),
-        ("dropoff > pickup",      "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_datetime AS DATE) = ? AND dropoff_datetime <= pickup_datetime"),
+        ("trip_distance >= 0",    "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_date AS DATE) = ? AND trip_distance < 0"),
+        ("fare_amount >= 0",      "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_date AS DATE) = ? AND fare_amount < 0"),
+        ("passenger_count 1-6",   "SELECT COUNT(*) FROM dbo.nyc_taxi_trips WHERE CAST(pickup_date AS DATE) = ? AND (passenger_count < 1 OR passenger_count > 6)"),
     ]
     for rule_name, sql in checks:
         cursor.execute(sql, run_date)
@@ -113,36 +110,24 @@ def check_business_rules(cursor, run_date: str):
 def check_aggregations_table(cursor, run_date: str):
     """Verifica que la tabla de agregaciones zona/hora esté cargada."""
     cursor.execute(
-        """
-        SELECT COUNT(*) FROM dbo.nyc_taxi_agg_zone_hour
-        WHERE report_date = ?
-        """,
-        run_date,
+        "SELECT COUNT(*) FROM dbo.nyc_taxi_agg_zone_hour WHERE report_date = ?", run_date
     )
     count = cursor.fetchone()[0]
     log.info("Agregaciones zona/hora para %s: %s filas", run_date, count)
     if count == 0:
-        raise ValidationError(
-            f"Tabla de agregaciones vacía para {run_date}"
-        )
+        raise ValidationError(f"Tabla de agregaciones vacía para {run_date}")
     return count
 
 
 def check_metrics_table(cursor, run_date: str):
     """Verifica que las métricas calculadas existan."""
     cursor.execute(
-        """
-        SELECT COUNT(*) FROM dbo.nyc_taxi_metrics_daily
-        WHERE metric_date = ?
-        """,
-        run_date,
+        "SELECT COUNT(*) FROM dbo.nyc_taxi_metrics_daily WHERE pickup_date = ?", run_date
     )
     count = cursor.fetchone()[0]
     log.info("Métricas diarias para %s: %s filas", run_date, count)
     if count == 0:
-        raise ValidationError(
-            f"Tabla de métricas vacía para {run_date}"
-        )
+        raise ValidationError(f"Tabla de métricas vacía para {run_date}")
 
 
 def run_all_validations(run_date: str) -> bool:

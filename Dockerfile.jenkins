@@ -4,20 +4,30 @@ USER root
 
 RUN apt-get update && apt-get install -y \
     curl unzip lsb-release python3 python3-pip python3-venv \
-    unixodbc-dev \
+    unixodbc unixodbc-dev apt-transport-https ca-certificates gnupg \
     && ln -sf /usr/bin/python3 /usr/local/bin/python3 \
     && ln -sf /usr/bin/pip3 /usr/local/bin/pip3 \
     && rm -rf /var/lib/apt/lists/*
 
+# Azure CLI
 RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 
+# Terraform
 RUN curl -fsSL https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip \
     -o /tmp/terraform.zip \
     && unzip /tmp/terraform.zip -d /usr/local/bin/ \
     && rm /tmp/terraform.zip
 
-# Removed the pip upgrade line — pip 25.x is already installed via apt, no upgrade needed
+# ✅ FIX ODBC DRIVER 18
+RUN mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+ | gpg --dearmor --batch --yes -o /etc/apt/keyrings/microsoft.gpg \
+ && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
+ > /etc/apt/sources.list.d/mssql-release.list
+
+RUN apt-get update \
+ && ACCEPT_EULA=Y apt-get install -y msodbcsql18
 
 USER jenkins
 
-RUN jenkins-plugin-cli --plugins ws-cleanup:latest
+RUN jenkins-plugin-cli --plugins ws-cleanup
