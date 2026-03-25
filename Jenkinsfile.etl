@@ -62,8 +62,7 @@ pipeline {
         stage('Upload to Blob Storage') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'azure-storage-connection-string', 
-                        variable: 'AZURE_STORAGE_CONNECTION_STRING')
+                    string(credentialsId: 'azure-storage-connection-string', variable: 'AZURE_STORAGE_CONNECTION_STRING')
                 ]) {
                     script {
                         def output = sh(
@@ -84,7 +83,8 @@ pipeline {
         stage('Run Databricks ETL') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'databricks-token', variable: 'DATABRICKS_TOKEN')
+                    string(credentialsId: 'databricks-token', variable: 'DATABRICKS_TOKEN'),
+                    string(credentialsId: 'databricks-host',  variable: 'DATABRICKS_HOST')
                 ]) {
                     script {
                         def output = sh(
