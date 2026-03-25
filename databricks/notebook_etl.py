@@ -35,17 +35,26 @@ OUTPUT_CONTAINER = dbutils.widgets.get("output_container")
 RUN_DATE         = dbutils.widgets.get("run_date") or datetime.utcnow().strftime("%Y-%m-%d")
 
 # DELTA_BASE usa DBFS — no requiere External Location ni Unity Catalog config
-DELTA_BASE   = "dbfs:/nyc-taxi/delta"
+DELTA_BASE = "dbfs:/nyc-taxi/delta"
 
 # SQL config viene del Spark config del cluster
 SQL_JDBC_URL = spark.conf.get("spark.sql.jdbc.url", "")
 SQL_USER     = spark.conf.get("spark.sql.jdbc.user", "")
 SQL_PASSWORD = spark.conf.get("spark.sql.jdbc.password", "")
 
+# ─── Config escritura SQL ─────────────────────────────────────────────────────
+# Ajusta SQL_WRITE_CHUNKS según el tamaño del dataset:
+#   - Dataset pequeño  (<1M filas):  10–20 chunks
+#   - Dataset mediano  (1–5M filas): 30–50 chunks
+#   - Dataset grande   (>5M filas):  50–100 chunks
+SQL_WRITE_CHUNKS    = 20    # nº de particiones al escribir en SQL
+SQL_WRITE_BATCHSIZE = 1000  # filas por batch JDBC (era 10000, muy alto)
+
 print(f"input_path   = {INPUT_PATH}")
 print(f"run_date     = {RUN_DATE}")
 print(f"delta_base   = {DELTA_BASE}")
 print(f"sql_url      = {SQL_JDBC_URL[:60]}..." if SQL_JDBC_URL else "sql_url = (no configurado)")
+print(f"sql_chunks   = {SQL_WRITE_CHUNKS}  |  sql_batchsize = {SQL_WRITE_BATCHSIZE}")
 
 # COMMAND ----------
 # MAGIC %md ### 1. Ingesta raw
@@ -174,6 +183,11 @@ def calculate_metrics(df: DataFrame) -> DataFrame:
 
 df_metrics = calculate_metrics(df_clean)
 
+# FIX: cache df_metrics para que los 3 writes a SQL y el resumen
+# no recomputen todo el pipeline desde el parquet original.
+df_metrics.cache()
+print("[cache] df_metrics cacheado en memoria")
+
 # COMMAND ----------
 # MAGIC %md ### 4. Agregaciones por zona y hora
 
@@ -270,26 +284,44 @@ write_delta(
 
 # COMMAND ----------
 # MAGIC %md ### 6. Escritura en Azure SQL
+# MAGIC
+# MAGIC **FIX vs versión anterior:**
+# MAGIC - `repartition(SQL_WRITE_CHUNKS)` antes de cada write para evitar que SQL Server
+# MAGIC   reciba demasiadas conexiones simultáneas o batches enormes por partición.
+# MAGIC - `batchsize` reducido de 10 000 a 1 000 para que cada transacción sea pequeña
+# MAGIC   y SQL Server no se trabe con locks.
+# MAGIC - `df_metrics` está cacheado, así que el `select` no recomputa el pipeline.
 
 # COMMAND ----------
 
 def write_to_sql(df: DataFrame, table: str, mode: str = "append"):
-    """Escribe un DataFrame en Azure SQL via JDBC."""
+    """
+    Escribe un DataFrame en Azure SQL via JDBC con chunks controlados.
+
+    Cambios respecto a la versión original:
+    - repartition(SQL_WRITE_CHUNKS): distribuye la carga en particiones pequeñas,
+      evitando que cada task JDBC tarde demasiado y quede colgado.
+    - batchsize=SQL_WRITE_BATCHSIZE: transacciones más pequeñas, menos locks en SQL Server.
+    """
     if not SQL_JDBC_URL:
         print(f"[SQL] SKIP: spark.sql.jdbc.url no configurado en el cluster (tabla: {table})")
         return
-    (df.write
+
+    (df
+        .repartition(SQL_WRITE_CHUNKS)   # FIX: controla concurrencia hacia SQL Server
+        .write
         .format("jdbc")
-        .option("url", SQL_JDBC_URL)
-        .option("dbtable", f"dbo.{table}")
-        .option("user", SQL_USER)
+        .option("url",      SQL_JDBC_URL)
+        .option("dbtable",  f"dbo.{table}")
+        .option("user",     SQL_USER)
         .option("password", SQL_PASSWORD)
-        .option("driver", "com.microsoft.sqlserver.jdbc.SQLServerDriver")
-        .option("batchsize", 10000)
+        .option("driver",   "com.microsoft.sqlserver.jdbc.SQLServerDriver")
+        .option("batchsize", SQL_WRITE_BATCHSIZE)   # FIX: era 10000, ahora 1000
         .option("truncate", mode == "overwrite")
         .mode(mode)
         .save())
-    print(f"[SQL] ✓ {table} escrito en Azure SQL ({mode})")
+
+    print(f"[SQL] ✓ {table} escrito en Azure SQL | chunks={SQL_WRITE_CHUNKS} | batchsize={SQL_WRITE_BATCHSIZE} | mode={mode}")
 
 sql_trips_cols = [
     "pickup_datetime", "dropoff_datetime", "vendor_id",
@@ -303,6 +335,10 @@ write_to_sql(df_metrics.select(sql_trips_cols), "nyc_taxi_trips",         mode="
 write_to_sql(df_zone_hour,                       "nyc_taxi_agg_zone_hour", mode="append")
 write_to_sql(df_daily,                           "nyc_taxi_metrics_daily", mode="append")
 
+# FIX: liberar cache después de que ya no se necesita
+df_metrics.unpersist()
+print("[cache] df_metrics liberado")
+
 # COMMAND ----------
 # MAGIC %md ### 7. Resumen del run
 
@@ -314,7 +350,6 @@ print("="*60)
 print(f"Fecha procesada  : {RUN_DATE}")
 print(f"Filas brutas     : {df_raw.count():,}")
 print(f"Filas limpias    : {df_clean.count():,}")
-print(f"Filas con metric : {df_metrics.count():,}")
 print(f"Agg zona/hora    : {df_zone_hour.count():,}")
 print(f"Metricas diarias : {df_daily.count():,}")
 print("="*60)
