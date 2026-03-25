@@ -1,0 +1,119 @@
+// ============================================================
+//  PIPELINE 3 — VALIDACIÓN Y CALIDAD
+//  Se dispara automáticamente al final del Pipeline ETL,
+//  o se puede correr manualmente con parámetros.
+//
+//  Para correrlo manualmente en Jenkins:
+//    RUN_DATE         = YYYY-MM-DD  (requerido)
+//    DATABRICKS_RUN_ID = opcional, solo informativo
+// ============================================================
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'RUN_DATE',          defaultValue: '', description: 'Fecha del ETL a validar (YYYY-MM-DD)')
+        string(name: 'DATABRICKS_RUN_ID', defaultValue: '', description: 'Run ID de Databricks (informativo)')
+    }
+
+    environment {
+        // SQL Server se configura desde las credenciales de Jenkins.
+        // Agrega en Jenkins → Credentials:
+        //   ID: azure-sql-username  → tipo: Secret text → valor: sqladmin
+        //   ID: azure-sql-password  → tipo: Secret text → valor: <tu password>
+        //
+        // El servidor y DB se ponen aquí como variables de entorno
+        // para no depender de Terraform outputs en este pipeline.
+        AZURE_SQL_SERVER   = "taxi-etl-sql-etl01.database.windows.net"
+        AZURE_SQL_DATABASE = "taxi-etl-db"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Setup Python') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    venv/bin/pip install --quiet \
+                        "pyodbc>=5.0.0" \
+                        "pandas>=2.0.0" \
+                        "pyarrow>=14.0.0" \
+                        "python-dotenv>=1.0.0" \
+                        "requests>=2.31.0" \
+                        "pytest>=7.4.0" \
+                        "pytest-cov>=4.1.0"
+                '''
+            }
+        }
+
+        stage('Validate Data') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'azure-sql-username', variable: 'AZURE_SQL_USERNAME'),
+                    string(credentialsId: 'azure-sql-password', variable: 'AZURE_SQL_PASSWORD')
+                ]) {
+                    script {
+                        def runDate = params.RUN_DATE ?: new Date().format('yyyy-MM-dd')
+                        echo "Validando datos para fecha: ${runDate}"
+                        sh "venv/bin/python3 functions/validate.py --run-date ${runDate}"
+                    }
+                }
+            }
+        }
+
+        stage('Integration & Quality Tests') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'databricks-token',   variable: 'DATABRICKS_TOKEN'),
+                    string(credentialsId: 'azure-sql-username', variable: 'AZURE_SQL_USERNAME'),
+                    string(credentialsId: 'azure-sql-password', variable: 'AZURE_SQL_PASSWORD')
+                ]) {
+                    script {
+                        def runDate = params.RUN_DATE ?: new Date().format('yyyy-MM-dd')
+                        sh """
+                            RUN_DATE=${runDate} venv/bin/python3 -m pytest \
+                                tests/integration/ tests/data_quality/ \
+                                -v --tb=short -q
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'tests/**/*.xml'
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+===========================================
+  VALIDACIÓN — EXITO
+  Fecha validada : ${params.RUN_DATE ?: 'N/A'}
+  Databricks ID  : ${params.DATABRICKS_RUN_ID ?: 'N/A'}
+===========================================
+            """
+        }
+        failure {
+            echo """
+===========================================
+  VALIDACIÓN — FALLÓ
+  Fecha : ${params.RUN_DATE ?: 'N/A'}
+  Revisa validate.py o los tests de calidad.
+  Puedes re-correr este pipeline manualmente
+  sin necesidad de volver a correr el ETL.
+===========================================
+            """
+        }
+        always {
+            sh 'rm -rf venv'
+        }
+    }
+}

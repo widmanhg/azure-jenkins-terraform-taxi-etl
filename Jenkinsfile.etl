@@ -1,0 +1,157 @@
+// ============================================================
+//  PIPELINE 2 — ETL
+//  Corre en cada carga de datos.
+//  Trigger: automático (cron, webhook, o manual)
+//  Al terminar con SUCCESS dispara el Pipeline 3 (validación).
+// ============================================================
+pipeline {
+    agent any
+
+    environment {
+        PARQUET_FILE   = "data/yellow_tripdata_2024-01.parquet"
+        BLOB_CONTAINER = "raw"
+        DATABRICKS_JOB = "nyc-taxi-etl"
+
+        // Nombre exacto del job de validación en Jenkins
+        VALIDATE_JOB   = "taxi-etl-validate"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Setup Python') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    venv/bin/pip install --quiet \
+                        "azure-storage-blob>=12.19.0" \
+                        "databricks-sdk>=0.20.0" \
+                        "pyodbc>=5.0.0" \
+                        "pandas>=2.0.0" \
+                        "pyarrow>=14.0.0" \
+                        "python-dotenv>=1.0.0" \
+                        "requests>=2.31.0" \
+                        "pytest>=7.4.0" \
+                        "pytest-cov>=4.1.0"
+                '''
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                sh '''
+                    venv/bin/python3 -m pytest tests/unit/ \
+                        -v --tb=short \
+                        --cov=functions \
+                        --cov-report=term-missing \
+                        -q
+                '''
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: 'tests/unit/*.xml'
+                }
+            }
+        }
+
+        stage('Upload to Blob Storage') {
+            steps {
+                script {
+                    def output = sh(
+                        script: "venv/bin/python3 functions/upload.py --file ${env.PARQUET_FILE} --container ${env.BLOB_CONTAINER}",
+                        returnStdout: true
+                    ).trim()
+                    echo output
+
+                    def blobLine = output.split('\n').find { it.startsWith('BLOB_NAME=') }
+                    if (!blobLine) error('upload.py no devolvió BLOB_NAME')
+                    env.BLOB_NAME = blobLine.replace('BLOB_NAME=', '')
+                    echo "Blob subido: ${env.BLOB_NAME}"
+                }
+            }
+        }
+
+        stage('Run Databricks ETL') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'databricks-token', variable: 'DATABRICKS_TOKEN')
+                ]) {
+                    script {
+                        def output = sh(
+                            script: """
+                                venv/bin/python3 functions/run_databricks.py \
+                                    --blob-name ${env.BLOB_NAME} \
+                                    --blob-container ${env.BLOB_CONTAINER} \
+                                    --job-name ${env.DATABRICKS_JOB}
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        echo output
+
+                        def runLine = output.split('\n').find { it.startsWith('DATABRICKS_RUN_ID=') }
+                        if (runLine) env.DATABRICKS_RUN_ID = runLine.replace('DATABRICKS_RUN_ID=', '')
+
+                        def statusLine = output.split('\n').find { it.startsWith('DATABRICKS_STATUS=') }
+                        def status = statusLine?.replace('DATABRICKS_STATUS=', '') ?: 'UNKNOWN'
+
+                        if (status != 'SUCCESS') {
+                            error("Databricks ETL terminó con status: ${status}")
+                        }
+
+                        echo "Databricks run_id: ${env.DATABRICKS_RUN_ID}"
+                    }
+                }
+            }
+        }
+
+        stage('Trigger Validación') {
+            steps {
+                script {
+                    // Calcula RUN_DATE desde el BLOB_NAME
+                    // Formato esperado: nyc-taxi/YYYY/MM/DD/archivo.parquet
+                    def parts = env.BLOB_NAME.tokenize('/')
+                    env.RUN_DATE = (parts.size() >= 4)
+                        ? "${parts[1]}-${parts[2]}-${parts[3]}"
+                        : new Date().format('yyyy-MM-dd')
+
+                    echo "ETL completado. Disparando validación para fecha: ${env.RUN_DATE}"
+
+                    // Dispara el pipeline de validación y NO espera —
+                    // el ETL ya terminó, la validación corre independiente.
+                    // Cambia wait: true si quieres que el ETL espere el resultado.
+                    build job: env.VALIDATE_JOB,
+                          parameters: [
+                              string(name: 'RUN_DATE',         value: env.RUN_DATE),
+                              string(name: 'DATABRICKS_RUN_ID', value: env.DATABRICKS_RUN_ID ?: '')
+                          ],
+                          wait: false
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+===========================================
+  ETL — EXITO
+  Blob      : ${env.BLOB_NAME ?: 'N/A'}
+  DB run_id : ${env.DATABRICKS_RUN_ID ?: 'N/A'}
+  Fecha ETL : ${env.RUN_DATE ?: 'N/A'}
+  Validación disparada en: ${env.VALIDATE_JOB}
+===========================================
+            """
+        }
+        failure {
+            echo "ETL falló — Databricks o el upload tuvieron un problema."
+        }
+        always {
+            sh 'rm -rf venv'
+        }
+    }
+}

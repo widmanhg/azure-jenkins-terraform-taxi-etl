@@ -1,0 +1,189 @@
+// ============================================================
+//  PIPELINE 1 — INFRAESTRUCTURA
+//  Corre solo cuando cambia Terraform.
+//  Trigger: manual o cambios en terraform/**
+// ============================================================
+pipeline {
+    agent any
+
+    environment {
+        TF_SUFFIX = "etl01"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
+                    string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+                            terraform init \
+                                -var="client_id=${AZURE_CLIENT_ID}" \
+                                -var="client_secret=${AZURE_CLIENT_SECRET}" \
+                                -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
+                                -var="tenant_id=${AZURE_TENANT_ID}" \
+                                -var="suffix=${TF_SUFFIX}" \
+                                -var="sql_admin_password=${SQL_ADMIN_PASSWORD}"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Import RG') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+                            terraform import \
+                                azurerm_resource_group.main \
+                                /subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/taxi-etl-rg \
+                            || true
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
+                    string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+                            terraform plan \
+                                -var="client_id=${AZURE_CLIENT_ID}" \
+                                -var="client_secret=${AZURE_CLIENT_SECRET}" \
+                                -var="subscription_id=${AZURE_SUBSCRIPTION_ID}" \
+                                -var="tenant_id=${AZURE_TENANT_ID}" \
+                                -var="suffix=${TF_SUFFIX}" \
+                                -var="sql_admin_password=${SQL_ADMIN_PASSWORD}" \
+                                -out=tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL'),
+                    string(credentialsId: 'sql_admin_password', variable: 'SQL_ADMIN_PASSWORD')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                            export ARM_CLIENT_ID=${AZURE_CLIENT_ID}
+                            export ARM_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+                            export ARM_SUBSCRIPTION_ID=${AZURE_SUBSCRIPTION_ID}
+                            export ARM_TENANT_ID=${AZURE_TENANT_ID}
+                            terraform apply -auto-approve tfplan
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Capture & Store Outputs') {
+            steps {
+                withCredentials([
+                    azureServicePrincipal('AZURE_SERVICE_PRINCIPAL')
+                ]) {
+                    dir('terraform') {
+                        script {
+                            // Captura outputs y los guarda en un archivo
+                            // para que el pipeline ETL los pueda leer
+                            def storageAccount = sh(
+                                script: '''
+                                    export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+                                    export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
+                                    export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
+                                    export ARM_TENANT_ID=$AZURE_TENANT_ID
+                                    terraform output -raw storage_account_name
+                                ''',
+                                returnStdout: true
+                            ).trim()
+
+                            def databricksUrl = "https://" + sh(
+                                script: '''
+                                    export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+                                    export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
+                                    export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
+                                    export ARM_TENANT_ID=$AZURE_TENANT_ID
+                                    terraform output -raw databricks_workspace_url
+                                ''',
+                                returnStdout: true
+                            ).trim()
+
+                            def sqlServer = sh(
+                                script: '''
+                                    export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+                                    export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
+                                    export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
+                                    export ARM_TENANT_ID=$AZURE_TENANT_ID
+                                    terraform output -raw sql_server_fqdn
+                                ''',
+                                returnStdout: true
+                            ).trim()
+
+                            def sqlDb = sh(
+                                script: '''
+                                    export ARM_CLIENT_ID=$AZURE_CLIENT_ID
+                                    export ARM_CLIENT_SECRET=$AZURE_CLIENT_SECRET
+                                    export ARM_SUBSCRIPTION_ID=$AZURE_SUBSCRIPTION_ID
+                                    export ARM_TENANT_ID=$AZURE_TENANT_ID
+                                    terraform output -raw sql_database_name
+                                ''',
+                                returnStdout: true
+                            ).trim()
+
+                            echo "Storage    : ${storageAccount}"
+                            echo "Databricks : ${databricksUrl}"
+                            echo "SQL Server : ${sqlServer}"
+                            echo "SQL DB     : ${sqlDb}"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo """
+===========================================
+  INFRA — EXITO
+  Terraform aplicado sin cambios pendientes.
+===========================================
+            """
+        }
+        failure {
+            echo "Terraform falló — revisa el plan antes de aplicar."
+        }
+    }
+}
