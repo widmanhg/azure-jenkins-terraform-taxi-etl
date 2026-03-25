@@ -1,18 +1,21 @@
 """
 Stage 1 – Upload local Parquet to Azure Blob Storage (raw/ container)
-Jenkins llama: python functions/upload.py --file data/yellow_tripdata_2024-01.parquet
+
+Jenkins llama:
+python functions/upload.py --file data/yellow_tripdata_2024-01.parquet
 """
+
 import os
 import sys
 import argparse
 import logging
 from pathlib import Path
-from datetime import datetime
 
 from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
 
 load_dotenv()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -20,45 +23,92 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
+# ----------------------------------------------------------
+# Blob client
+# ----------------------------------------------------------
+
 def get_blob_client() -> BlobServiceClient:
     conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+
     if not conn_str:
-        raise EnvironmentError("AZURE_STORAGE_CONNECTION_STRING no está definida en .env")
-    # FIX: timeouts explícitos para evitar cortes en uploads de archivos grandes
+        raise EnvironmentError(
+            "AZURE_STORAGE_CONNECTION_STRING no está definida"
+        )
+
     return BlobServiceClient.from_connection_string(
         conn_str,
-        connection_timeout=300,  # 5 min para establecer conexión
-        read_timeout=300,        # 5 min por operación de lectura/escritura
+        connection_timeout=300,
+        read_timeout=300,
     )
 
 
-def upload_parquet(local_path: str, container: str = "raw") -> str:
-    """
-    Sube el archivo parquet a Blob Storage bajo la ruta:
-        raw/nyc-taxi/YYYY/MM/DD/<filename>
-    Retorna la URL del blob.
-    """
-    file_path = Path(local_path)
-    if not file_path.exists():
-        raise FileNotFoundError(f"Archivo no encontrado: {local_path}")
+# ----------------------------------------------------------
+# Build blob name from parquet filename
+# ----------------------------------------------------------
 
-    now = datetime.utcnow()
-    blob_name = f"nyc-taxi/{now.year}/{now.month:02d}/{now.day:02d}/{file_path.name}"
+def build_blob_name(file_path: Path) -> str:
+    """
+    Convierte:
+        yellow_tripdata_2024-01.parquet
+
+    en:
+        nyc-taxi/2024/01/01/yellow_tripdata_2024-01.parquet
+    """
+
+    name = file_path.stem  # yellow_tripdata_2024-01
+
+    try:
+        ym = name.split("_")[2]     # 2024-01
+        year, month = ym.split("-")
+    except Exception:
+        raise ValueError(
+            f"No se pudo extraer fecha desde {file_path.name}"
+        )
+
+    day = "01"
+
+    blob_name = (
+        f"nyc-taxi/"
+        f"{year}/"
+        f"{month}/"
+        f"{day}/"
+        f"{file_path.name}"
+    )
+
+    return blob_name
+
+
+# ----------------------------------------------------------
+# Upload
+# ----------------------------------------------------------
+
+def upload_parquet(local_path: str, container: str = "raw") -> str:
+
+    file_path = Path(local_path)
+
+    if not file_path.exists():
+        raise FileNotFoundError(local_path)
+
+    blob_name = build_blob_name(file_path)
 
     client = get_blob_client()
     container_client = client.get_container_client(container)
 
-    # Crea el container si no existe
+    # crear container si no existe
     try:
         container_client.create_container()
-        log.info("Container '%s' creado.", container)
+        log.info("Container '%s' creado", container)
     except Exception:
-        pass  # Ya existe
+        pass
 
-    log.info("Subiendo %s → blob://%s/%s ...", file_path.name, container, blob_name)
+    log.info(
+        "Subiendo %s → blob://%s/%s",
+        file_path.name,
+        container,
+        blob_name,
+    )
+
     with open(file_path, "rb") as data:
-        # FIX: max_concurrency sube el archivo en bloques paralelos,
-        # más resistente a timeouts que un único stream de 50 MB.
         container_client.upload_blob(
             name=blob_name,
             data=data,
@@ -66,26 +116,51 @@ def upload_parquet(local_path: str, container: str = "raw") -> str:
             max_concurrency=4,
         )
 
-    url = f"https://{client.account_name}.blob.core.windows.net/{container}/{blob_name}"
+    url = (
+        f"https://{client.account_name}.blob.core.windows.net/"
+        f"{container}/{blob_name}"
+    )
+
     log.info("Upload completado: %s", url)
 
-    # Exporta la URL para que Jenkins la pase al siguiente stage
+    # IMPORTANTE → Jenkins usa esto
     print(f"BLOB_URL={url}")
     print(f"BLOB_NAME={blob_name}")
+
     return url
 
 
+# ----------------------------------------------------------
+# Main
+# ----------------------------------------------------------
+
 def main():
-    parser = argparse.ArgumentParser(description="Sube parquet a Azure Blob Storage")
-    parser.add_argument("--file", required=True, help="Ruta local del archivo .parquet")
-    parser.add_argument("--container", default="raw", help="Nombre del container (default: raw)")
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--file",
+        required=True,
+        help="Ruta del parquet",
+    )
+
+    parser.add_argument(
+        "--container",
+        default="raw",
+        help="Container",
+    )
+
     args = parser.parse_args()
 
     try:
-        upload_parquet(args.file, args.container)
+        upload_parquet(
+            args.file,
+            args.container,
+        )
         sys.exit(0)
-    except Exception as exc:
-        log.error("Error en upload: %s", exc)
+
+    except Exception as e:
+        log.error("Error upload: %s", e)
         sys.exit(1)
 
 
