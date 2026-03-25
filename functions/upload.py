@@ -24,7 +24,12 @@ def get_blob_client() -> BlobServiceClient:
     conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
     if not conn_str:
         raise EnvironmentError("AZURE_STORAGE_CONNECTION_STRING no está definida en .env")
-    return BlobServiceClient.from_connection_string(conn_str)
+    # FIX: timeouts explícitos para evitar cortes en uploads de archivos grandes
+    return BlobServiceClient.from_connection_string(
+        conn_str,
+        connection_timeout=300,  # 5 min para establecer conexión
+        read_timeout=300,        # 5 min por operación de lectura/escritura
+    )
 
 
 def upload_parquet(local_path: str, container: str = "raw") -> str:
@@ -52,7 +57,14 @@ def upload_parquet(local_path: str, container: str = "raw") -> str:
 
     log.info("Subiendo %s → blob://%s/%s ...", file_path.name, container, blob_name)
     with open(file_path, "rb") as data:
-        container_client.upload_blob(name=blob_name, data=data, overwrite=True)
+        # FIX: max_concurrency sube el archivo en bloques paralelos,
+        # más resistente a timeouts que un único stream de 50 MB.
+        container_client.upload_blob(
+            name=blob_name,
+            data=data,
+            overwrite=True,
+            max_concurrency=4,
+        )
 
     url = f"https://{client.account_name}.blob.core.windows.net/{container}/{blob_name}"
     log.info("Upload completado: %s", url)
