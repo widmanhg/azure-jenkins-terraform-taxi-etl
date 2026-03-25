@@ -83,12 +83,16 @@ pipeline {
         stage('Run Databricks ETL') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'databricks-token', variable: 'DATABRICKS_TOKEN'),
-                    string(credentialsId: 'databricks-host',  variable: 'DATABRICKS_HOST')
+                    string(credentialsId: 'databricks-token',      variable: 'DATABRICKS_TOKEN'),
+                    string(credentialsId: 'databricks-host',       variable: 'DATABRICKS_HOST'),
+                    string(credentialsId: 'azure-storage-account', variable: 'AZURE_STORAGE_ACCOUNT')
                 ]) {
                     script {
                         def output = sh(
                             script: """
+                                AZURE_STORAGE_ACCOUNT=${env.AZURE_STORAGE_ACCOUNT} \
+                                DATABRICKS_TOKEN=${env.DATABRICKS_TOKEN} \
+                                DATABRICKS_HOST=${env.DATABRICKS_HOST} \
                                 venv/bin/python3 functions/run_databricks.py \
                                     --blob-name ${env.BLOB_NAME} \
                                     --blob-container ${env.BLOB_CONTAINER} \
