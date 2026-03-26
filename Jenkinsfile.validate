@@ -16,13 +16,6 @@ pipeline {
     }
 
     environment {
-        // SQL Server se configura desde las credenciales de Jenkins.
-        // Agrega en Jenkins → Credentials:
-        //   ID: azure-sql-username  → tipo: Secret text → valor: sqladmin
-        //   ID: azure-sql-password  → tipo: Secret text → valor: <tu password>
-        //
-        // El servidor y DB se ponen aquí como variables de entorno
-        // para no depender de Terraform outputs en este pipeline.
         AZURE_SQL_SERVER   = "taxi-etl-sql-etl01.database.windows.net"
         AZURE_SQL_DATABASE = "taxi-etl-db"
     }
@@ -46,7 +39,8 @@ pipeline {
                         "python-dotenv>=1.0.0" \
                         "requests>=2.31.0" \
                         "pytest>=7.4.0" \
-                        "pytest-cov>=4.1.0"
+                        "pytest-cov>=4.1.0" \
+                        "azure-storage-blob>=12.0.0"
                 '''
             }
         }
@@ -69,9 +63,11 @@ pipeline {
         stage('Integration & Quality Tests') {
             steps {
                 withCredentials([
-                    string(credentialsId: 'databricks-token',   variable: 'DATABRICKS_TOKEN'),
-                    string(credentialsId: 'azure-sql-username', variable: 'AZURE_SQL_USERNAME'),
-                    string(credentialsId: 'azure-sql-password', variable: 'AZURE_SQL_PASSWORD')
+                    string(credentialsId: 'azure-sql-username',              variable: 'AZURE_SQL_USERNAME'),
+                    string(credentialsId: 'azure-sql-password',              variable: 'AZURE_SQL_PASSWORD'),
+                    string(credentialsId: 'databricks-token',                variable: 'DATABRICKS_TOKEN'),
+                    string(credentialsId: 'databricks-host',                 variable: 'DATABRICKS_HOST'),
+                    string(credentialsId: 'azure-storage-connection-string', variable: 'AZURE_STORAGE_CONNECTION_STRING')
                 ]) {
                     script {
                         def runDate = params.RUN_DATE ?: new Date().format('yyyy-MM-dd')
