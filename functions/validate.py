@@ -110,7 +110,11 @@ def check_business_rules(cursor, run_date: str):
 def check_aggregations_table(cursor, run_date: str):
     """Verifica que la tabla de agregaciones zona/hora esté cargada."""
     cursor.execute(
-        "SELECT COUNT(*) FROM dbo.nyc_taxi_agg_zone_hour WHERE report_date = ?", run_date
+        """
+        SELECT COUNT(*) FROM dbo.nyc_taxi_agg_zone_hour
+        WHERE CAST(pickup_date AS DATE) = ?
+        """,
+        run_date,
     )
     count = cursor.fetchone()[0]
     log.info("Agregaciones zona/hora para %s: %s filas", run_date, count)
