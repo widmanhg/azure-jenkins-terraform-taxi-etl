@@ -37,6 +37,9 @@ End-to-end automated ETL pipeline for processing NYC Taxi trip data using Jenkin
     • SQL Database                          
 ```
 
+![alt text](images/image.png)
+
+
 **Data Flow:**
 1. Raw parquet files → Azure Blob Storage (`raw/` container)
 2. Databricks Spark job processes data
@@ -298,6 +301,10 @@ spark.sql.jdbc.user sqladmin
 spark.sql.jdbc.password Genesis1.1
 ```
 
+
+![alt text](images/image2.png)
+
+
 **Important:** Replace these values with outputs from your Terraform run:
 - Storage account key: Found in Terraform output `storage_account_key`
 - SQL connection string: Found in Terraform output `sql_server_fqdn`
@@ -312,6 +319,9 @@ Allow access to SQL Database from your IP and Azure services:
    - Click "Add client IP" to add your current IP
    - Enable "Allow Azure services and resources to access this server"
 3. Click "Save"
+
+
+![alt text](images/image3.png)
 
 #### Option B: Azure CLI
 ```bash
@@ -360,20 +370,42 @@ databricks workspace import \
   --language PYTHON
 ```
 
-#### B. Create the Job
+### Step 4: Upload Databricks Notebook and Create Job
 
-1. Go to: `Databricks → Workflows → Create Job`
-2. Configure:
-   - **Job name:** `nyc-taxi-etl`
-   - **Task name:** `process-taxi-data`
-   - **Type:** Notebook
-   - **Path:** `/Users/your-email/notebook_etl`
-   - **Cluster:** Select your configured cluster
-3. Add parameters (these will be passed from Jenkins):
-   - `input_path`
-   - `output_container`
-   - `run_date`
-4. Click "Create"
+#### A. Import Repository into Databricks Workspace
+
+Before creating the Databricks job, ensure the repository is imported into your Databricks workspace:
+
+1. Go to: `Databricks → Repos`.
+2. Click **Add Repo → Import**.
+3. Enter your repository URL: `https://github.com/widmanhg/azure-jenkins-terraform-taxi-etl.git`.
+4. Select the branch (`main`) and click **Import**.
+5. Verify that the notebook `notebook_etl.py` is visible under the imported repo.
+
+#### B. Upload the Notebook (if not using Repos)
+
+**Option 1: Databricks UI**  
+1. Go to: `Databricks → Workspace → Users → your-email`.  
+2. Click the dropdown → Import.  
+3. Select `databricks/notebook_etl.py`.  
+4. Choose Python as the language.  
+
+
+![alt text](images/image4.png)
+
+**Option 2: Databricks CLI**  
+```bash
+# Install Databricks CLI
+pip install databricks-cli
+
+# Configure
+databricks configure --token
+
+# Upload notebook
+databricks workspace import \
+  databricks/notebook_etl.py \
+  /Users/your-email/notebook_etl \
+  --language PYTHON
 
 ### Step 5: Create Jenkins Pipelines
 
@@ -1040,26 +1072,9 @@ GROUP BY processing_date
 ORDER BY processing_date DESC;
 ```
 
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-**Code Standards:**
-- Follow PEP 8 for Python code
-- Add unit tests for new functionality
-- Maintain minimum 70% code coverage
-- Update documentation for new features
+![alt text](images/image5.png)
 
 ---
-
 
 ## 👤 Author
 
