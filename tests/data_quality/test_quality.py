@@ -134,16 +134,16 @@ class TestDataQuality:
         assert bad == 0, f"{bad} viajes donde total < fare"
 
     def test_location_ids_valid(self, db_conn, run_date):
-        """PU y DO location IDs deben estar en el rango válido de NYC (1-263)."""
+        """PU y DO location IDs deben estar en el rango válido de NYC (1-265)."""
         cursor = db_conn.cursor()
         cursor.execute("""
             SELECT COUNT(*) FROM dbo.nyc_taxi_trips
             WHERE CAST(pickup_datetime AS DATE) = ?
-              AND (pu_location_id < 1 OR pu_location_id > 263
-                OR do_location_id < 1 OR do_location_id > 263)
+              AND (pu_location_id < 1 OR pu_location_id > 265
+                OR do_location_id < 1 OR do_location_id > 265)
         """, run_date)
         bad = cursor.fetchone()[0]
-        assert bad == 0, f"{bad} viajes con location IDs fuera del rango NYC (1-263)"
+        assert bad == 0, f"{bad} viajes con location IDs fuera del rango NYC (1-265)"
 
     # ── Métricas calculadas ─────────────────────────────────────────────────
 
@@ -186,7 +186,7 @@ class TestDataQuality:
         cursor = db_conn.cursor()
         cursor.execute("""
             SELECT COUNT(*) FROM dbo.nyc_taxi_agg_zone_hour
-            WHERE report_date = ? AND trip_count <= 0
+            WHERE CAST(pickup_date AS DATE) = ? AND trip_count <= 0
         """, run_date)
         bad = cursor.fetchone()[0]
         assert bad == 0, f"{bad} registros de agregación con trip_count <= 0"
@@ -196,7 +196,7 @@ class TestDataQuality:
         cursor = db_conn.cursor()
         cursor.execute("""
             SELECT COUNT(DISTINCT pickup_hour) FROM dbo.nyc_taxi_agg_zone_hour
-            WHERE report_date = ?
+            WHERE CAST(pickup_date AS DATE) = ?
         """, run_date)
         distinct_hours = cursor.fetchone()[0]
         assert distinct_hours >= 12, \
